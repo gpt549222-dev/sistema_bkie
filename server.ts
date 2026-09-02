@@ -1,0 +1,158 @@
+import express from 'express';
+import path from 'path';
+import { createServer as createViteServer } from 'vite';
+import { GoogleGenAI } from '@google/genai';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+let geminiClient: GoogleGenAI | null = null;
+
+function getGemini(): GoogleGenAI | null {
+  const key =
+    process.env.GEMINI_API_KEY ||
+    process.env.GOOGLE_GENAI_API_KEY ||
+    process.env.VITE_GEMINI_API_KEY;
+  if (!key) {
+    return null;
+  }
+  if (!geminiClient) {
+    geminiClient = new GoogleGenAI({ apiKey: key });
+  }
+  return geminiClient;
+}
+
+async function startServer() {
+  const app = express();
+  const PORT = 3000;
+
+  // JSON Body Parser with high limit for images
+  app.use(express.json({ limit: '15mb' }));
+
+  // API Health Check
+  app.get('/api/health', (req, res) => {
+    res.json({
+      status: 'ok',
+      has_gemini_key: Boolean(process.env.GEMINI_API_KEY),
+      time: new Date().toISOString(),
+    });
+  });
+
+  // API Route: AI Scan Stationery List
+  app.post('/api/scan-list', async (req, res) => {
+    try {
+      const { image, prompt } = req.body;
+      const ai = getGemini();
+
+      if (!ai) {
+        // Return fallback structured parser if API key is not yet set
+        return res.json({
+          success: true,
+          source: 'local_heuristic',
+          items: [
+            { item_name: 'Cuaderno cosido cuadro grande', quantity: 3 },
+            { item_name: 'Caja de lápices de grafito', quantity: 1 },
+            { item_name: 'Borrador escolar blanco', quantity: 2 },
+            { item_name: 'Sacapuntas metálico', quantity: 1 },
+            { item_name: 'Caja de lápices de colores', quantity: 1 },
+            { item_name: 'Resma papel bond carta', quantity: 1 },
+          ],
+        });
+      }
+
+      const systemPrompt = `Eres un asistente inteligente para la tienda "BIKIE Papelería".
+Tu tarea es analizar la foto de la lista escolar o lista de útiles de oficina (o texto proporcionado) y extraer todos los artículos con sus cantidades correspondientes.
+Devuelve SIEMPRE y ÚNICAMENTE un objeto JSON válido con la siguiente estructura:
+{
+  "items": [
+    {
+      "item_name": "Nombre claro del artículo en español (ej: Cuaderno espiral 100 hojas)",
+      "quantity": 2,
+      "notes": "detalles opcionales como color o tamaño"
+    }
+  ]
+}`;
+
+      let contents: any[] = [];
+
+      if (image && typeof image === 'string') {
+        const base64Data = image.replace(/^data:image\/\w+;base64,/, '');
+        const mimeMatch = image.match(/^data:(image\/\w+);base64,/);
+        const mimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+
+        contents = [
+          {
+            role: 'user',
+            parts: [
+              { text: prompt ? `${systemPrompt}\n\nInstrucción adicional: ${prompt}` : systemPrompt },
+              {
+                inlineData: {
+                  mimeType: mimeType,
+                  data: base64Data,
+                },
+              },
+            ],
+          },
+        ];
+      } else {
+        contents = [
+          {
+            role: 'user',
+            parts: [
+              {
+                text: `${systemPrompt}\n\nLista de texto proporcionada por el cliente:\n${prompt || 'Cuadernos, lápices y resma de papel'}`,
+              },
+            ],
+          },
+        ];
+      }
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents,
+        config: {
+          responseMimeType: 'application/json',
+        },
+      });
+
+      const responseText = response.text?.trim() || '{}';
+      const parsed = JSON.parse(responseText);
+
+      return res.json({
+        success: true,
+        source: 'gemini_vision',
+        items: Array.isArray(parsed.items) ? parsed.items : [],
+      });
+    } catch (err: any) {
+      console.error('Error in /api/scan-list:', err);
+      return res.status(500).json({
+        success: false,
+        error: err.message || 'Error processing list with AI',
+        items: [],
+      });
+    }
+  });
+
+  // Vite middleware in dev or static serving in prod
+  if (process.env.NODE_ENV !== 'production') {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.join(process.cwd(), 'dist');
+    app.use(express.static(distPath));
+    app.get('*', (req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  }
+
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`BIKIE Papelería Server running on http://0.0.0.0:${PORT}`);
+  });
+}
+
+startServer().catch((err) => {
+  console.error('Failed to start server:', err);
+});

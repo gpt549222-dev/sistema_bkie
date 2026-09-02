@@ -1,0 +1,6 @@
+{
+  "name": "BIKIE Papelería",
+  "description": "Sistema integral de gestión de papelería, inventario, punto de venta, facturación y catálogo en línea respaldado por Supabase.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
