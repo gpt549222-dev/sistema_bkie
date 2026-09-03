@@ -4,12 +4,15 @@
 -- Este archivo contiene las extensiones de esquema para:
 -- 1. Módulo de Servicios Adicionales (Copias, Redacción, Plastificado, Bebidas, etc.)
 -- 2. Módulo de Proveedores (Suppliers)
+-- 3. Módulo de Notificaciones en Tiempo Real (Notifications)
 -- Moneda Oficial del Sistema: FCFA (XAF)
 -- ==============================================================================
 
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
 -- 1. TABLA DE SERVICIOS ADICIONALES (public.services)
 CREATE TABLE IF NOT EXISTS public.services (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     code TEXT NOT NULL UNIQUE,
     name TEXT NOT NULL,
     category TEXT NOT NULL DEFAULT 'copias', -- 'copias', 'impresiones', 'redaccion', 'plastificado', 'encuadernacion', 'bebidas', 'digitalizacion', 'otros'
@@ -23,7 +26,7 @@ CREATE TABLE IF NOT EXISTS public.services (
 
 -- 2. TABLA DE PROVEEDORES (public.suppliers)
 CREATE TABLE IF NOT EXISTS public.suppliers (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name TEXT NOT NULL,
     contact_person TEXT,
     website_url TEXT,
@@ -93,7 +96,7 @@ ON CONFLICT DO NOTHING;
 
 -- 9. TABLA DE NOTIFICACIONES (public.notifications)
 CREATE TABLE IF NOT EXISTS public.notifications (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     title TEXT NOT NULL,
     message TEXT NOT NULL,
     type TEXT NOT NULL DEFAULT 'info', -- 'new_order', 'payment_confirmed', 'low_stock', 'offer_alert', 'info'
@@ -114,4 +117,21 @@ CREATE POLICY "Public read notifications" ON public.notifications
 DROP POLICY IF EXISTS "Admin all notifications" ON public.notifications;
 CREATE POLICY "Admin all notifications" ON public.notifications
     FOR ALL USING (true) WITH CHECK (true);
+
+-- 10. HABILITAR REALTIME EN SUPABASE (SERVICES, SUPPLIERS, NOTIFICATIONS)
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime') THEN
+        IF NOT EXISTS (SELECT 1 FROM pg_publication_tables WHERE pubname = 'supabase_realtime' AND tablename = 'services') THEN
+            ALTER PUBLICATION supabase_realtime ADD TABLE public.services;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_publication_tables WHERE pubname = 'supabase_realtime' AND tablename = 'suppliers') THEN
+            ALTER PUBLICATION supabase_realtime ADD TABLE public.suppliers;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_publication_tables WHERE pubname = 'supabase_realtime' AND tablename = 'notifications') THEN
+            ALTER PUBLICATION supabase_realtime ADD TABLE public.notifications;
+        END IF;
+    END IF;
+END $$;
+
 

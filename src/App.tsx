@@ -235,6 +235,29 @@ export function App() {
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {/* Supabase Unconfigured Warning Banner */}
+        {!isConfigured && (
+          <div className="mb-6 p-4 bg-amber-950/40 border border-amber-500/30 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 text-amber-200 shadow-xl backdrop-blur-xs animate-in fade-in duration-300">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-xs font-black uppercase tracking-wider font-mono text-amber-300">
+                  Supabase no detectado en este despliegue de Vercel
+                </p>
+                <p className="text-xs text-amber-200/80 mt-1 font-sans">
+                  Para cargar y sincronizar los datos reales, agrega <span className="font-mono bg-black/40 px-1.5 py-0.5 rounded text-white text-[11px]">VITE_SUPABASE_URL</span> y <span className="font-mono bg-black/40 px-1.5 py-0.5 rounded text-white text-[11px]">VITE_SUPABASE_ANON_KEY</span> en el dashboard de Vercel (Project Settings &rarr; Environment Variables) y haz Redeploy.
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => setIsConnectionOpen(true)}
+              className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-black text-xs font-black uppercase tracking-wider rounded-lg transition-colors cursor-pointer shrink-0 shadow-sm"
+            >
+              Configurar Manualmente
+            </button>
+          </div>
+        )}
+
         {/* Hero Promotion Banner */}
         <HeroBanner
           activeOffers={activeOffers}

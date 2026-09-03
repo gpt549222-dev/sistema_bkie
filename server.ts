@@ -51,8 +51,8 @@ async function startServer() {
 
   // API Route: AI Scan Stationery List
   app.post('/api/scan-list', async (req, res) => {
+    const { image, prompt } = req.body || {};
     try {
-      const { image, prompt } = req.body;
       const ai = getGemini();
 
       if (!ai) {
@@ -136,6 +136,26 @@ Devuelve SIEMPRE y ÚNICAMENTE un objeto JSON válido con la siguiente estructur
       });
     } catch (err: any) {
       console.error('Error in /api/scan-list:', err);
+      if (typeof prompt === 'string' && prompt.trim().length > 0) {
+        const fallbackItems = prompt
+          .split(/[\n,;]+/)
+          .map((s: string) => s.trim())
+          .filter((s: string) => s.length > 1)
+          .map((line: string) => {
+            const match = line.match(/^(\d+)\s*(?:x|de)?\s*(.+)$/i);
+            if (match) {
+              return { item_name: match[2].trim(), quantity: parseInt(match[1], 10) || 1 };
+            }
+            return { item_name: line, quantity: 1 };
+          });
+        if (fallbackItems.length > 0) {
+          return res.status(200).json({
+            success: true,
+            source: 'fallback_heuristic',
+            items: fallbackItems,
+          });
+        }
+      }
       return res.status(500).json({
         success: false,
         error: err.message || 'Error processing list with AI',

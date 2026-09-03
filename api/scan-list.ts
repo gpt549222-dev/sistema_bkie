@@ -117,6 +117,35 @@ Devuelve SIEMPRE y ÚNICAMENTE un objeto JSON válido con la siguiente estructur
     });
   } catch (err: any) {
     console.error('Error in Vercel /api/scan-list:', err);
+    let promptText: string = '';
+    try {
+      const b: any = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
+      promptText = b?.prompt || '';
+    } catch {
+      promptText = '';
+    }
+
+    if (promptText.trim().length > 0) {
+      const fallbackItems = promptText
+        .split(/[\n,;]+/)
+        .map((s: string) => s.trim())
+        .filter((s: string) => s.length > 1)
+        .map((line: string) => {
+          const match = line.match(/^(\d+)\s*(?:x|de)?\s*(.+)$/i);
+          if (match) {
+            return { item_name: match[2].trim(), quantity: parseInt(match[1], 10) || 1 };
+          }
+          return { item_name: line, quantity: 1 };
+        });
+      if (fallbackItems.length > 0) {
+        return res.status(200).json({
+          success: true,
+          source: 'fallback_heuristic',
+          items: fallbackItems,
+        });
+      }
+    }
+
     return res.status(500).json({
       success: false,
       error: err.message || 'Error processing list with AI',
