@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
-import { supabase } from '../services/supabase';
+import { supabase, isConfigured } from '../services/supabase';
 import { playNewOrderChime } from '../utils/audio';
 import { useAuth } from './AuthContext';
 
@@ -39,6 +39,7 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   // Fetch real count of unread notifications from Supabase
   const fetchUnreadNotificationsCount = useCallback(async () => {
+    if (!isConfigured) return;
     try {
       let query = supabase
         .from('notifications')
@@ -63,6 +64,11 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   }, [fetchUnreadNotificationsCount, refreshTrigger]);
 
   useEffect(() => {
+    if (!isConfigured) {
+      setStatus('disconnected');
+      return;
+    }
+
     setStatus('reconnecting');
 
     const channel = supabase

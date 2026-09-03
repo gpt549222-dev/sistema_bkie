@@ -1,56 +1,137 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
-// Environment variables
-const envUrl = import.meta.env.VITE_SUPABASE_URL || '';
-const envKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+// Sanitization helpers to prevent issues with quotes, whitespace or trailing slashes
+function sanitizeString(val: unknown): string {
+  if (typeof val !== 'string') return '';
+  let str = val.trim();
+  // Strip surrounding quotes if user copied with quotes in Vercel dashboard
+  if ((str.startsWith('"') && str.endsWith('"')) || (str.startsWith("'") && str.endsWith("'"))) {
+    str = str.slice(1, -1).trim();
+  }
+  return str;
+}
 
-// Stored config fallback in case user enters it via connection assistant UI
+function sanitizeUrl(url: unknown): string {
+  let str = sanitizeString(url);
+  if (str.endsWith('/')) {
+    str = str.slice(0, -1);
+  }
+  return str;
+}
+
+// Retrieve environment variables from Vite, Next/Vercel standard prefixes or localStorage fallback
+const envUrl =
+  (import.meta.env && import.meta.env.VITE_SUPABASE_URL) ||
+  (import.meta.env && (import.meta.env as any).SUPABASE_URL) ||
+  (import.meta.env && (import.meta.env as any).NEXT_PUBLIC_SUPABASE_URL) ||
+  '';
+
+const envKey =
+  (import.meta.env && import.meta.env.VITE_SUPABASE_ANON_KEY) ||
+  (import.meta.env && (import.meta.env as any).SUPABASE_ANON_KEY) ||
+  (import.meta.env && (import.meta.env as any).NEXT_PUBLIC_SUPABASE_ANON_KEY) ||
+  '';
+
+// Stored config fallback in case user enters it via connection assistant UI in browser
 const storedUrl = typeof window !== 'undefined' ? localStorage.getItem('bikie_supabase_url') || '' : '';
 const storedKey = typeof window !== 'undefined' ? localStorage.getItem('bikie_supabase_anon_key') || '' : '';
 
-export const SUPABASE_URL = (envUrl || storedUrl || '').trim();
-export const SUPABASE_ANON_KEY = (envKey || storedKey || '').trim();
+export const SUPABASE_URL = sanitizeUrl(envUrl || storedUrl || '');
+export const SUPABASE_ANON_KEY = sanitizeString(envKey || storedKey || '');
 
 export const isConfigured = Boolean(
-  SUPABASE_URL.startsWith('http') && SUPABASE_ANON_KEY.length > 10
+  SUPABASE_URL.startsWith('http') &&
+  !SUPABASE_URL.includes('placeholder') &&
+  SUPABASE_ANON_KEY.length > 20 &&
+  !SUPABASE_ANON_KEY.includes('dummy')
 );
 
-// Fallback dummy for initialization if not configured yet (avoids throwing at module evaluation)
-const activeUrl = isConfigured ? SUPABASE_URL : 'https://placeholder-bikie.supabase.co';
-const activeKey = isConfigured ? SUPABASE_ANON_KEY : 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.dummy';
+// Informative error message when Supabase is not configured
+const CONFIG_ERROR_MESSAGE =
+  'Supabase no está configurado en este despliegue. Configura las variables de entorno VITE_SUPABASE_URL y VITE_SUPABASE_ANON_KEY en Vercel (Project Settings > Environment Variables) y haz Redeploy.';
 
-export let supabase: SupabaseClient = createClient(activeUrl, activeKey, {
-  auth: {
-    persistSession: true,
-    autoRefreshToken: true,
-    detectSessionInUrl: true,
-  },
-  realtime: {
-    params: {
-      eventsPerSecond: 10,
+// Safe client creator: if configured, creates real Supabase client;
+// if not configured, creates a proxy that does NOT ping any fake placeholder server and reports configuration error
+function createSafeClient(url: string, key: string): SupabaseClient {
+  if (isConfigured) {
+    return createClient(url, key, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true,
+      },
+      realtime: {
+        params: {
+          eventsPerSecond: 10,
+        },
+      },
+    });
+  }
+
+  // Fallback proxy: avoids throwing at module evaluation while explicitly returning configuration error on any call
+  const queryResult = {
+    data: null,
+    error: new Error(CONFIG_ERROR_MESSAGE),
+  };
+
+  const builder: any = {
+    select: () => builder,
+    insert: () => builder,
+    update: () => builder,
+    delete: () => builder,
+    upsert: () => builder,
+    eq: () => builder,
+    neq: () => builder,
+    order: () => builder,
+    limit: () => builder,
+    single: async () => queryResult,
+    maybeSingle: async () => queryResult,
+    then: (resolve: any) => resolve(queryResult),
+  };
+
+  const proxyClient: any = {
+    from: () => builder,
+    rpc: async () => queryResult,
+    channel: () => ({
+      on: () => ({ on: () => ({ subscribe: (cb: any) => { cb?.('CLOSED'); return {}; } }) }),
+      subscribe: (cb: any) => { cb?.('CLOSED'); return {}; },
+    }),
+    auth: {
+      onAuthStateChange: () => ({ data: { subscription: { unsubscribe: () => {} } } }),
+      getSession: async () => ({ data: { session: null }, error: null }),
+      getUser: async () => ({ data: { user: null }, error: null }),
+      signInWithPassword: async () => ({ data: null, error: new Error(CONFIG_ERROR_MESSAGE) }),
+      signOut: async () => ({ error: null }),
     },
-  },
-});
+  };
+
+  return proxyClient as SupabaseClient;
+}
+
+export let supabase: SupabaseClient = createSafeClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 export function reconfigureSupabase(url: string, key: string) {
-  const cleanUrl = url.trim();
-  const cleanKey = key.trim();
+  const cleanUrlValue = sanitizeUrl(url);
+  const cleanKeyValue = sanitizeString(key);
   if (typeof window !== 'undefined') {
-    localStorage.setItem('bikie_supabase_url', cleanUrl);
-    localStorage.setItem('bikie_supabase_anon_key', cleanKey);
+    localStorage.setItem('bikie_supabase_url', cleanUrlValue);
+    localStorage.setItem('bikie_supabase_anon_key', cleanKeyValue);
   }
-  supabase = createClient(cleanUrl, cleanKey, {
-    auth: {
-      persistSession: true,
-      autoRefreshToken: true,
-      detectSessionInUrl: true,
-    },
-    realtime: {
-      params: {
-        eventsPerSecond: 10,
+
+  if (cleanUrlValue.startsWith('http') && cleanKeyValue.length > 20) {
+    supabase = createClient(cleanUrlValue, cleanKeyValue, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true,
       },
-    },
-  });
+      realtime: {
+        params: {
+          eventsPerSecond: 10,
+        },
+      },
+    });
+  }
 }
 
 export function isTableMissingError(error: any): boolean {
@@ -75,18 +156,18 @@ export async function checkSupabaseHealth(): Promise<{
     return {
       connected: false,
       tablesFound: false,
-      message: 'Supabase no está configurado. Por favor ingresa la URL y la Anon Key del proyecto.',
+      message: CONFIG_ERROR_MESSAGE,
     };
   }
 
   try {
-    const { data, error } = await supabase.from('products').select('id').limit(1);
+    const { error } = await supabase.from('products').select('id').limit(1);
     if (error) {
       if (isTableMissingError(error)) {
         return {
           connected: true,
           tablesFound: false,
-          message: "Conexión a Supabase establecida, pero las tablas aún no han sido creadas. Ejecuta el script SQL en el SQL Editor de Supabase.",
+          message: "Conexión a Supabase establecida, pero las tablas aún no han sido creadas. Ejecuta modifdb.sql o BIKIE_SUPABASE_COMPLETE.sql en el SQL Editor de Supabase.",
         };
       }
       return {

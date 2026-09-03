@@ -25,9 +25,14 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react(), tailwindcss()],
+    envPrefix: ['VITE_', 'SUPABASE_', 'NEXT_PUBLIC_'],
     define: {
       'import.meta.env.VITE_SUPABASE_URL': JSON.stringify(supabaseUrl),
       'import.meta.env.VITE_SUPABASE_ANON_KEY': JSON.stringify(supabaseAnonKey),
+      'import.meta.env.SUPABASE_URL': JSON.stringify(supabaseUrl),
+      'import.meta.env.SUPABASE_ANON_KEY': JSON.stringify(supabaseAnonKey),
+      'import.meta.env.NEXT_PUBLIC_SUPABASE_URL': JSON.stringify(supabaseUrl),
+      'import.meta.env.NEXT_PUBLIC_SUPABASE_ANON_KEY': JSON.stringify(supabaseAnonKey),
     },
     resolve: {
       alias: {

@@ -33,6 +33,7 @@ import { AiListScannerModal } from './components/storefront/AiListScannerModal';
 import { getProducts, getCategories } from './services/productService';
 import { getOffers } from './services/offerService';
 import { getBusinessSettings } from './services/settingsService';
+import { isConfigured } from './services/supabase';
 import { useAuth } from './context/AuthContext';
 import { useRealtime } from './context/RealtimeContext';
 import { Product, Category, Offer, Order, Invoice, BusinessSettings } from './types';
@@ -44,6 +45,7 @@ import {
   ShieldCheck,
   Search,
   BookOpen,
+  AlertTriangle,
 } from 'lucide-react';
 
 export function App() {

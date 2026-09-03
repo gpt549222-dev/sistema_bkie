@@ -4,10 +4,7 @@ import { GoogleGenAI } from '@google/genai';
 let geminiClient: GoogleGenAI | null = null;
 
 function getGemini(): GoogleGenAI | null {
-  const key =
-    process.env.GEMINI_API_KEY ||
-    process.env.GOOGLE_GENAI_API_KEY ||
-    process.env.VITE_GEMINI_API_KEY;
+  const key = process.env.GEMINI_API_KEY || process.env.GOOGLE_GENAI_API_KEY;
   if (!key) return null;
   if (!geminiClient) {
     geminiClient = new GoogleGenAI({ apiKey: key });
@@ -16,12 +13,28 @@ function getGemini(): GoogleGenAI | null {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
 
   try {
-    const { image, prompt } = req.body || {};
+    let body = req.body;
+    if (typeof body === 'string') {
+      try {
+        body = JSON.parse(body);
+      } catch {
+        body = {};
+      }
+    }
+    const { image, prompt } = body || {};
     const ai = getGemini();
 
     if (!ai) {
@@ -87,7 +100,7 @@ Devuelve SIEMPRE y ÚNICAMENTE un objeto JSON válido con la siguiente estructur
     }
 
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-flash-latest',
       contents,
       config: {
         responseMimeType: 'application/json',

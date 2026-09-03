@@ -31,10 +31,21 @@ async function startServer() {
 
   // API Health Check
   app.get('/api/health', (req, res) => {
+    const hasGemini = Boolean(
+      process.env.GEMINI_API_KEY ||
+      process.env.GOOGLE_GENAI_API_KEY
+    );
+    const hasSupabase = Boolean(
+      process.env.VITE_SUPABASE_URL ||
+      process.env.SUPABASE_URL ||
+      process.env.NEXT_PUBLIC_SUPABASE_URL
+    );
     res.json({
       status: 'ok',
-      has_gemini_key: Boolean(process.env.GEMINI_API_KEY),
+      has_gemini_key: hasGemini,
+      has_supabase_configured: hasSupabase,
       time: new Date().toISOString(),
+      platform: 'express-server',
     });
   });
 
@@ -108,7 +119,7 @@ Devuelve SIEMPRE y ÚNICAMENTE un objeto JSON válido con la siguiente estructur
       }
 
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-flash-latest',
         contents,
         config: {
           responseMimeType: 'application/json',
