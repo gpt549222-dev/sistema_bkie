@@ -21,7 +21,6 @@ import { useCart } from '../../context/CartContext';
 import {
   scanListWithAi,
   matchItemsToCatalog,
-  SAMPLE_LIST_PRESETS,
 } from '../../services/aiListScanner';
 import { formatCurrency } from '../../utils/currency';
 import confetti from 'canvas-confetti';
@@ -95,13 +94,6 @@ export const AiListScannerModal: React.FC<AiListScannerModalProps> = ({
     } finally {
       setIsScanning(false);
     }
-  };
-
-  const handleSelectPreset = (preset: (typeof SAMPLE_LIST_PRESETS)[0]) => {
-    const text = preset.items.map((i) => `${i.quantity}x ${i.item_name}`).join('\n');
-    setTextInput(text);
-    setPreviewImage(null);
-    handleRunAiScan(text, null);
   };
 
   const toggleItemSelection = (id: string) => {
@@ -317,31 +309,6 @@ export const AiListScannerModal: React.FC<AiListScannerModalProps> = ({
                   placeholder="Ejemplo:&#10;3 cuadernos cosidos&#10;5 bolígrafos azules&#10;1 resma de papel bond&#10;2 borradores escolares"
                   className="w-full h-24 bg-[#141414] border border-white/15 rounded-xl p-3 text-sm text-white placeholder-white/30 focus:border-[#dc2626] focus:outline-none resize-none font-mono"
                 />
-              </div>
-
-              {/* Quick Presets for Instant 1-Click Test */}
-              <div className="space-y-2 pt-1">
-                <div className="flex items-center justify-between text-xs text-white/50">
-                  <span className="font-bold uppercase tracking-wider text-[10px]">
-                    Probar con listas predefinidas:
-                  </span>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                  {SAMPLE_LIST_PRESETS.map((preset) => (
-                    <button
-                      key={preset.id}
-                      onClick={() => handleSelectPreset(preset)}
-                      className="p-2.5 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-[#dc2626]/50 rounded-lg text-left transition-all cursor-pointer group"
-                    >
-                      <div className="text-xs font-bold text-white group-hover:text-[#ef4444] transition-colors">
-                        {preset.title}
-                      </div>
-                      <div className="text-[10px] text-white/40 line-clamp-1 mt-0.5">
-                        {preset.items.length} artículos escolares
-                      </div>
-                    </button>
-                  ))}
-                </div>
               </div>
 
               {/* Scan Action Button */}

@@ -3,9 +3,9 @@
  * Source of truth for database schema & RPC functions.
  */
 
-export const BIKIE_SUPABASE_COMPLETE_SQL = `-- ==============================================================================
--- BIKIE PAPELERÍA — SCRIPT COMPLETO DE MIGRACIÓN SUPABASE / POSTGRESQL
--- ARCHIVO ÚNICO Y OFICIAL: BIKIE_SUPABASE_COMPLETE.sql
+export const MODIF_DB_SQL = `-- ==============================================================================
+-- BIKIE PAPELERÍA & SISTEMAS INFORMÁTICOS — SCRIPT ÚNICO DE BASE DE DATOS
+-- ARCHIVO OFICIAL EXCLUSIVO: MODIF_DB.sql
 -- ==============================================================================
 -- Moneda Oficial: FCFA (XAF)
 -- Totalmente idempotente y ejecutable en el Editor SQL de Supabase.
@@ -292,5 +292,6 @@ ALTER TABLE public.settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.activity_logs ENABLE ROW LEVEL SECURITY;
 `;
 
-export const BIKIE_MIGRATION_SQL = BIKIE_SUPABASE_COMPLETE_SQL;
+export const BIKIE_MIGRATION_SQL = MODIF_DB_SQL;
+export const BIKIE_SUPABASE_COMPLETE_SQL = MODIF_DB_SQL;
 

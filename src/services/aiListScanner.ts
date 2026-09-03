@@ -99,53 +99,6 @@ function normalizeText(text: string): string {
 }
 
 /**
- * Predefined Quick List Presets for 1-click testing
- */
-export const SAMPLE_LIST_PRESETS = [
-  {
-    id: 'escolar_basica',
-    title: '🎒 Lista Escolar Primaria',
-    description: 'Cuadernos, lápices de grafito, borrador, sacapuntas, caja de colores y tijera.',
-    items: [
-      { item_name: 'Cuaderno cosido cuadro grande', quantity: 3 },
-      { item_name: 'Caja de lápices de grafito HB', quantity: 1 },
-      { item_name: 'Borrador blanco escolar', quantity: 2 },
-      { item_name: 'Sacapuntas metálico con depósito', quantity: 1 },
-      { item_name: 'Caja de lápices de colores 12 unidades', quantity: 1 },
-      { item_name: 'Tijera escolar punta roma', quantity: 1 },
-      { item_name: 'Pega blanca líquida 120ml', quantity: 1 },
-    ],
-  },
-  {
-    id: 'oficina_ejecutiva',
-    title: '🏢 Suministros de Oficina',
-    description: 'Resma papel carta, bolígrafos azules/negros, resaltadores, engrapadora y clips.',
-    items: [
-      { item_name: 'Resma de papel bond carta 75g', quantity: 2 },
-      { item_name: 'Bolígrafo tinta azul punta fina', quantity: 5 },
-      { item_name: 'Bolígrafo tinta negra punta fina', quantity: 3 },
-      { item_name: 'Set de resaltadores fluorescentes', quantity: 1 },
-      { item_name: 'Engrapadora estándar de oficina', quantity: 1 },
-      { item_name: 'Caja de clips niquelados', quantity: 2 },
-      { item_name: 'Notas adhesivas Post-it amarillas', quantity: 3 },
-    ],
-  },
-  {
-    id: 'arte_diseno',
-    title: '🎨 Arte, Dibujo & Arquitectura',
-    description: 'Block de dibujo, lápices graduados, juego de escuadras, compás y estilógrafo.',
-    items: [
-      { item_name: 'Block de dibujo técnico con formato', quantity: 1 },
-      { item_name: 'Juego de lápices de dibujo graduados (2B, 4B, 6B)', quantity: 1 },
-      { item_name: 'Juego de escuadras 45° y 60° milimetradas', quantity: 1 },
-      { item_name: 'Compás de precisión técnico', quantity: 1 },
-      { item_name: 'Marcador permanente negro doble punta', quantity: 2 },
-      { item_name: 'Cinta adhesiva de papel para enmascarar', quantity: 1 },
-    ],
-  },
-];
-
-/**
  * Scan stationery list from image or prompt
  */
 export async function scanListWithAi(

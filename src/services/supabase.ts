@@ -19,7 +19,7 @@ function sanitizeUrl(url: unknown): string {
   return str;
 }
 
-// Retrieve environment variables from Vite, Next/Vercel standard prefixes or localStorage fallback
+// Retrieve environment variables from Vite, Next/Vercel standard prefixes
 const envUrl =
   (import.meta.env && import.meta.env.VITE_SUPABASE_URL) ||
   (import.meta.env && (import.meta.env as any).SUPABASE_URL) ||
@@ -32,12 +32,8 @@ const envKey =
   (import.meta.env && (import.meta.env as any).NEXT_PUBLIC_SUPABASE_ANON_KEY) ||
   '';
 
-// Stored config fallback in case user enters it via connection assistant UI in browser
-const storedUrl = typeof window !== 'undefined' ? localStorage.getItem('bikie_supabase_url') || '' : '';
-const storedKey = typeof window !== 'undefined' ? localStorage.getItem('bikie_supabase_anon_key') || '' : '';
-
-export const SUPABASE_URL = sanitizeUrl(envUrl || storedUrl || '');
-export const SUPABASE_ANON_KEY = sanitizeString(envKey || storedKey || '');
+export const SUPABASE_URL = sanitizeUrl(envUrl);
+export const SUPABASE_ANON_KEY = sanitizeString(envKey);
 
 export const isConfigured = Boolean(
   SUPABASE_URL.startsWith('http') &&
@@ -113,10 +109,6 @@ export let supabase: SupabaseClient = createSafeClient(SUPABASE_URL, SUPABASE_AN
 export function reconfigureSupabase(url: string, key: string) {
   const cleanUrlValue = sanitizeUrl(url);
   const cleanKeyValue = sanitizeString(key);
-  if (typeof window !== 'undefined') {
-    localStorage.setItem('bikie_supabase_url', cleanUrlValue);
-    localStorage.setItem('bikie_supabase_anon_key', cleanKeyValue);
-  }
 
   if (cleanUrlValue.startsWith('http') && cleanKeyValue.length > 20) {
     supabase = createClient(cleanUrlValue, cleanKeyValue, {
@@ -152,7 +144,7 @@ export async function checkSupabaseHealth(): Promise<{
   message: string;
   tablesFound?: boolean;
 }> {
-  if (!isConfigured && !storedUrl) {
+  if (!isConfigured) {
     return {
       connected: false,
       tablesFound: false,
@@ -167,7 +159,7 @@ export async function checkSupabaseHealth(): Promise<{
         return {
           connected: true,
           tablesFound: false,
-          message: "Conexión a Supabase establecida, pero las tablas aún no han sido creadas. Ejecuta modifdb.sql o BIKIE_SUPABASE_COMPLETE.sql en el SQL Editor de Supabase.",
+          message: "Conexión a Supabase establecida, pero las tablas aún no han sido creadas. Ejecuta MODIF_DB.sql en el SQL Editor de Supabase.",
         };
       }
       return {

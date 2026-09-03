@@ -38,17 +38,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const ai = getGemini();
 
     if (!ai) {
-      return res.status(200).json({
-        success: true,
-        source: 'local_heuristic',
-        items: [
-          { item_name: 'Cuaderno cosido cuadro grande', quantity: 3 },
-          { item_name: 'Caja de lápices de grafito', quantity: 1 },
-          { item_name: 'Borrador escolar blanco', quantity: 2 },
-          { item_name: 'Sacapuntas metálico', quantity: 1 },
-          { item_name: 'Caja de lápices de colores', quantity: 1 },
-          { item_name: 'Resma papel bond carta', quantity: 1 },
-        ],
+      return res.status(503).json({
+        success: false,
+        error: 'El servicio de IA de Gemini no está configurado en el servidor. Configure GEMINI_API_KEY en las variables de entorno.',
+        items: [],
       });
     }
 

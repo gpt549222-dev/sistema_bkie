@@ -64,6 +64,36 @@ export async function getOrder(id: string): Promise<Order | null> {
 export async function getOrderByNumber(orderNumber: string): Promise<Order | null> {
   const cleanNumber = (orderNumber || '').trim().toUpperCase();
   if (!cleanNumber) return null;
+
+  // 1. Try secure RPC track_order with SECURITY DEFINER
+  try {
+    const { data: rpcOrder, error: rpcError } = await supabase.rpc('track_order', {
+      p_order_number: cleanNumber,
+    });
+
+    if (!rpcError && rpcOrder && rpcOrder.id) {
+      return {
+        ...rpcOrder,
+        subtotal: Number(rpcOrder.subtotal) || 0,
+        discount: Number(rpcOrder.discount) || 0,
+        tax: Number(rpcOrder.tax) || 0,
+        total: Number(rpcOrder.total) || 0,
+        items: (rpcOrder.items || []).map((it: any) => ({
+          ...it,
+          original_unit_price: Number(it.original_unit_price) || 0,
+          unit_price: Number(it.unit_price) || 0,
+          discount_amount: Number(it.discount_amount) || 0,
+          total_price: Number(it.total_price) || 0,
+        })),
+        history: rpcOrder.history || [],
+        payments: rpcOrder.payments || [],
+      };
+    }
+  } catch (err) {
+    console.warn('RPC track_order not available, trying direct query:', err);
+  }
+
+  // 2. Direct query fallback
   const { data, error } = await supabase
     .from('orders')
     .select('*, items:order_items(*), history:order_status_history(*), payments(*)')
