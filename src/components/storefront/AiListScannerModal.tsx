@@ -48,12 +48,13 @@ export const AiListScannerModal: React.FC<AiListScannerModalProps> = ({
   const [matchedItems, setMatchedItems] = useState<AiScannedItem[]>([]);
   const [unmatchedCount, setUnmatchedCount] = useState(0);
   const [scanSuccessMessage, setScanSuccessMessage] = useState<string | null>(null);
+  const [scanErrorMessage, setScanErrorMessage] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
   const handleImageSelected = (file: File) => {
     if (!file.type.startsWith('image/')) {
-      alert('Por favor selecciona un archivo de imagen válido (JPG, PNG, WebP).');
+      setScanErrorMessage('Por favor selecciona un archivo de imagen válido (JPG, PNG, WebP).');
       return;
     }
 
@@ -61,6 +62,7 @@ export const AiListScannerModal: React.FC<AiListScannerModalProps> = ({
     reader.onload = (e) => {
       const result = e.target?.result as string;
       setPreviewImage(result);
+      setScanErrorMessage(null);
     };
     reader.readAsDataURL(file);
   };
@@ -70,12 +72,13 @@ export const AiListScannerModal: React.FC<AiListScannerModalProps> = ({
     const prompt = overridePrompt !== undefined ? overridePrompt : textInput;
 
     if (!img && !prompt.trim()) {
-      alert('Por favor toma una foto, sube una imagen o escribe tu lista de útiles.');
+      setScanErrorMessage('Por favor toma una foto, sube una imagen o escribe tu lista de útiles.');
       return;
     }
 
     setIsScanning(true);
     setScanSuccessMessage(null);
+    setScanErrorMessage(null);
 
     try {
       // Extract items using AI
@@ -88,7 +91,7 @@ export const AiListScannerModal: React.FC<AiListScannerModalProps> = ({
       setScanStep('results');
     } catch (err: any) {
       console.error('Error scanning list:', err);
-      alert('Hubo un inconveniente al procesar la lista. Intenta con otra imagen o texto.');
+      setScanErrorMessage(err.message || 'Hubo un error al procesar la lista con la IA. Verifique que la imagen sea legible o escriba los materiales.');
     } finally {
       setIsScanning(false);
     }
@@ -209,6 +212,13 @@ export const AiListScannerModal: React.FC<AiListScannerModalProps> = ({
             <div className="p-4 bg-emerald-950/80 border border-emerald-500/40 rounded-xl flex items-center gap-3 text-emerald-300 animate-in fade-in zoom-in-95">
               <CheckCircle2 className="w-6 h-6 text-emerald-400 shrink-0" />
               <p className="text-sm font-bold">{scanSuccessMessage}</p>
+            </div>
+          )}
+
+          {scanErrorMessage && (
+            <div className="p-4 bg-red-950/80 border border-red-500/40 rounded-xl flex items-center gap-3 text-red-300 animate-in fade-in zoom-in-95">
+              <AlertCircle className="w-6 h-6 text-red-400 shrink-0" />
+              <p className="text-sm font-medium">{scanErrorMessage}</p>
             </div>
           )}
 

@@ -152,7 +152,14 @@ export async function scanListWithAi(
   imageDataBase64: string | null,
   textPrompt: string | null
 ): Promise<{ item_name: string; quantity: number; notes?: string }[]> {
-  // If server is available, send to /api/scan-list
+  // If only text was provided without an image, parse the user's typed items directly
+  if (!imageDataBase64 && textPrompt && textPrompt.trim().length > 0) {
+    const parsed = parseTextListHeuristic(textPrompt);
+    if (parsed.length > 0) return parsed;
+    throw new Error('No se pudieron reconocer útiles en el texto proporcionado. Escribe un útil por línea.');
+  }
+
+  // If image (or image + prompt) is provided, process with AI via server endpoint
   try {
     const response = await fetch('/api/scan-list', {
       method: 'POST',
@@ -163,29 +170,25 @@ export async function scanListWithAi(
       }),
     });
 
-    if (response.ok) {
-      const data = await response.json();
-      if (Array.isArray(data.items) && data.items.length > 0) {
-        return data.items;
-      }
+    const data = await response.json().catch(() => null);
+
+    if (response.ok && data?.success && Array.isArray(data.items) && data.items.length > 0) {
+      return data.items;
     }
-  } catch (err) {
-    console.info('Server scan endpoint not reachable, using intelligent heuristic parser:', err);
-  }
 
-  // Fallback intelligent parser if text was provided
-  if (textPrompt) {
-    return parseTextListHeuristic(textPrompt);
-  }
+    if (data && !data.success && data.error) {
+      throw new Error(data.error);
+    }
 
-  // Default fallback if only an image without server API
-  return [
-    { item_name: 'Cuaderno espiral 100 hojas', quantity: 2 },
-    { item_name: 'Bolígrafo azul', quantity: 3 },
-    { item_name: 'Resma de papel bond', quantity: 1 },
-    { item_name: 'Lápiz de grafito', quantity: 4 },
-    { item_name: 'Borrador escolar', quantity: 1 },
-  ];
+    throw new Error('La IA no pudo detectar artículos escolares o de oficina en la imagen proporcionada. Intente con una foto más nítida e iluminada.');
+  } catch (err: any) {
+    // If text prompt was also provided, user can fall back to their own typed text
+    if (textPrompt && textPrompt.trim().length > 0) {
+      const parsed = parseTextListHeuristic(textPrompt);
+      if (parsed.length > 0) return parsed;
+    }
+    throw new Error(err.message || 'Error al procesar la lista con IA.');
+  }
 }
 
 /**

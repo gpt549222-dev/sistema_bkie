@@ -49,7 +49,7 @@ import {
 } from 'lucide-react';
 
 export function App() {
-  const { isAdmin, isAuthenticated, isDemoAdmin } = useAuth();
+  const { isAdmin, isAuthenticated } = useAuth();
   const { refreshTrigger } = useRealtime();
 
   // App Navigation View
@@ -117,7 +117,7 @@ export function App() {
 
   // Switch to Admin
   const handleOpenAdmin = () => {
-    if (isAdmin || isAuthenticated || isDemoAdmin) {
+    if (isAdmin) {
       setCurrentView('admin');
     } else {
       setIsLoginOpen(true);
@@ -148,6 +148,11 @@ export function App() {
 
   // If in Admin View
   if (currentView === 'admin') {
+    if (!isAdmin) {
+      setCurrentView('storefront');
+      setIsLoginOpen(true);
+      return null;
+    }
     return (
       <AdminLayout
         currentTab={adminTab}

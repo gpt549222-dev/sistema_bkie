@@ -372,6 +372,50 @@ export async function processDirectPosSale(payload: {
     throw new Error('La venta debe contener al menos un producto.');
   }
 
+  // 1. Try atomic PostgreSQL RPC execution (ACID with FOR UPDATE locks)
+  try {
+    const { data: rpcData, error: rpcError } = await supabase.rpc('process_pos_sale_atomic', {
+      p_customer_name: payload.customer_name.trim() || 'Cliente Mostrador',
+      p_customer_phone: payload.customer_phone?.trim() || 'N/A',
+      p_customer_address: payload.customer_address?.trim() || 'Mostrador POS BIKIE',
+      p_items: payload.items,
+      p_subtotal: payload.subtotal,
+      p_discount: payload.discount,
+      p_tax: payload.tax,
+      p_total: payload.total,
+      p_payment_method: payload.payment_method,
+      p_reference: payload.reference || null,
+      p_cashier_name: payload.cashier_name || 'Admin BIKIE',
+      p_notes: payload.notes || 'Venta directa en caja mostrador',
+    });
+
+    if (rpcError) {
+      if (rpcError.message && (rpcError.message.includes('Stock insuficiente') || rpcError.message.includes('denegada'))) {
+        throw new Error(rpcError.message);
+      }
+      throw rpcError;
+    }
+
+    if (rpcData?.success && rpcData?.invoice_id) {
+      const fullInvoice = await getInvoice(rpcData.invoice_id);
+      if (fullInvoice) {
+        return {
+          invoice_id: rpcData.invoice_id,
+          invoice_number: rpcData.invoice_number,
+          order_id: rpcData.order_id,
+          order_number: rpcData.order_number,
+          invoice: fullInvoice,
+        };
+      }
+    }
+  } catch (err: any) {
+    if (err.message && (err.message.includes('Stock insuficiente') || err.message.includes('denegada'))) {
+      throw err;
+    }
+    console.warn('RPC process_pos_sale_atomic not available or failed, falling back to direct operations:', err);
+  }
+
+  // 2. Direct operations fallback
   const year = new Date().getFullYear();
   const randNum = Math.floor(10000 + Math.random() * 90000);
   const orderNumber = `POS-${year}-${randNum}`;
@@ -384,7 +428,7 @@ export async function processDirectPosSale(payload: {
     }
   }
 
-  // 1. Create order
+  // Create order
   const { data: order, error: orderErr } = await supabase
     .from('orders')
     .insert({
@@ -409,7 +453,7 @@ export async function processDirectPosSale(payload: {
     throw new Error(`Error al crear pedido de venta POS: ${orderErr?.message}`);
   }
 
-  // 2. Order items and deduct stock
+  // Order items and deduct stock
   for (const it of payload.items) {
     await supabase.from('order_items').insert({
       order_id: order.id,
@@ -439,7 +483,7 @@ export async function processDirectPosSale(payload: {
     }
   }
 
-  // 3. Process payment and invoice
+  // Process payment and invoice
   const res = await processPaymentAndIssueInvoice({
     order_id: order.id,
     payment_method: payload.payment_method,

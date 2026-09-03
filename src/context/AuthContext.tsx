@@ -9,7 +9,7 @@ interface AuthContextType {
   userRole: 'admin' | 'cashier' | 'customer' | null;
   isAuthenticated: boolean;
   isLoading: boolean;
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string) => Promise<'admin' | 'cashier' | 'customer'>;
   logout: () => Promise<void>;
   refreshProfile: () => Promise<void>;
 }
@@ -22,7 +22,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [userRole, setUserRole] = useState<'admin' | 'cashier' | 'customer' | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
-  const fetchUserProfile = useCallback(async (userId: string) => {
+  const fetchUserProfile = useCallback(async (userId: string): Promise<'admin' | 'cashier' | 'customer'> => {
     try {
       const { data, error } = await supabase
         .from('profiles')
@@ -32,19 +32,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       if (error) {
         console.warn('[Auth] Error fetching user profile role:', error.message);
-        setUserRole(null);
-        return;
+        setUserRole('customer');
+        return 'customer';
       }
 
       if (data && data.role) {
-        setUserRole(data.role as 'admin' | 'cashier' | 'customer');
+        const role = data.role as 'admin' | 'cashier' | 'customer';
+        setUserRole(role);
+        return role;
       } else {
-        // Default role if not found
         setUserRole('customer');
+        return 'customer';
       }
     } catch (err) {
       console.warn('[Auth] Could not fetch profile role:', err);
-      setUserRole(null);
+      setUserRole('customer');
+      return 'customer';
     }
   }, []);
 
@@ -89,7 +92,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [fetchUserProfile]);
 
-  const login = async (email: string, password: string) => {
+  const login = async (email: string, password: string): Promise<'admin' | 'cashier' | 'customer'> => {
     setIsLoading(true);
     try {
       const { data, error } = await supabase.auth.signInWithPassword({
@@ -104,8 +107,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setSession(data.session);
       setUser(data.user);
       if (data.user) {
-        await fetchUserProfile(data.user.id);
+        const role = await fetchUserProfile(data.user.id);
+        return role;
       }
+      return 'customer';
     } finally {
       setIsLoading(false);
     }

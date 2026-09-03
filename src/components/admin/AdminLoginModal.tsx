@@ -24,7 +24,7 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
   const [password, setPassword] = useState('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const { login } = useAuth();
+  const { login, logout } = useAuth();
 
   if (!isOpen) return null;
 
@@ -34,7 +34,12 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
     setIsLoading(true);
 
     try {
-      await login(email.trim(), password);
+      const role = await login(email.trim(), password);
+      if (role !== 'admin') {
+        await logout();
+        setErrorMessage('Acceso denegado: Esta cuenta no tiene rol de administrador en Supabase.');
+        return;
+      }
       onSuccess();
       onClose();
     } catch (err: any) {

@@ -220,8 +220,37 @@ export async function adjustStock(
   quantityChange: number,
   type: InventoryMovementType,
   note?: string,
-  _user?: string
+  user?: string
 ): Promise<Product> {
+  // 1. Try atomic PostgreSQL RPC with row-level lock (FOR UPDATE)
+  try {
+    const { data: rpcData, error: rpcError } = await supabase.rpc('adjust_product_stock_atomic', {
+      p_product_id: productId,
+      p_quantity_change: quantityChange,
+      p_type: type,
+      p_note: note || null,
+      p_user: user || 'admin',
+    });
+
+    if (rpcError) {
+      if (rpcError.message && (rpcError.message.includes('Stock insuficiente') || rpcError.message.includes('denegada'))) {
+        throw new Error(rpcError.message);
+      }
+      throw rpcError;
+    }
+
+    if (rpcData?.success) {
+      const refreshed = await getProduct(productId);
+      if (refreshed) return refreshed;
+    }
+  } catch (err: any) {
+    if (err.message && (err.message.includes('Stock insuficiente') || err.message.includes('denegada'))) {
+      throw err;
+    }
+    console.warn('RPC adjust_product_stock_atomic fallback:', err);
+  }
+
+  // 2. Direct fallback
   const current = await getProduct(productId);
   if (!current) throw new Error('Producto no encontrado');
 

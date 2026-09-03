@@ -145,15 +145,25 @@ export async function createOrder(payload: CreateOrderPayload): Promise<{
       p_items: payload.items,
     });
 
-    if (!rpcError && rpcData?.order_id) {
+    if (rpcError) {
+      if (rpcError.message && (rpcError.message.includes('Stock insuficiente') || rpcError.message.includes('denegada'))) {
+        throw new Error(rpcError.message);
+      }
+      throw rpcError;
+    }
+
+    if (rpcData?.order_id) {
       playNewOrderChime();
       return {
         order_id: rpcData.order_id,
         order_number: rpcData.order_number || orderNumber,
       };
     }
-  } catch (rpcErr) {
-    console.warn('RPC create_order_atomic not available or error, falling back to direct table inserts:', rpcErr);
+  } catch (rpcErr: any) {
+    if (rpcErr.message && (rpcErr.message.includes('Stock insuficiente') || rpcErr.message.includes('denegada'))) {
+      throw rpcErr;
+    }
+    console.warn('RPC create_order_atomic fallback to direct table inserts:', rpcErr);
   }
 
   // 2. Direct Supabase transactional inserts
