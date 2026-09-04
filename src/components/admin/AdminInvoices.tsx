@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { getInvoices, cancelInvoice, deleteInvoice, getSales } from '../../services/invoiceService';
+import { getInvoices, cancelInvoice, getSales } from '../../services/invoiceService';
 import { Invoice, BusinessSettings, Sale } from '../../types';
 import { useRealtime } from '../../context/RealtimeContext';
 import { formatCurrency } from '../../utils/currency';
@@ -11,7 +11,6 @@ import {
   Download,
   FileSpreadsheet,
   Calendar,
-  Trash2,
 } from 'lucide-react';
 
 interface AdminInvoicesProps {
@@ -66,33 +65,23 @@ export const AdminInvoices: React.FC<AdminInvoicesProps> = ({
   };
 
   const handleCancelInvoice = async (invoice: Invoice) => {
+    if (invoice.status === 'cancelled') {
+      alert('Esta factura ya está anulada.');
+      return;
+    }
+
     const reason = prompt(
-      `¿Deseas anular la factura ${invoice.invoice_number}?\nIngresa el motivo de anulación:`,
+      `¿Deseas anular la factura ${invoice.invoice_number}?\nIngresa el motivo de anulación oficial:`,
       'Error de facturación o devolución'
     );
-    if (!reason) return;
+    if (!reason || !reason.trim()) return;
 
     try {
-      await cancelInvoice(invoice.id, reason);
-      alert('Factura anulada con éxito.');
+      await cancelInvoice(invoice.id, reason.trim());
+      alert('Factura anulada con éxito y registrada en auditoría contable.');
       triggerGlobalRefresh();
     } catch (err: any) {
       alert(`Error al anular factura: ${err.message}`);
-    }
-  };
-
-  const handleDeleteInvoice = async (invoice: Invoice, e: React.MouseEvent) => {
-    e.stopPropagation();
-    const confirmDelete = window.confirm(
-      `¿Confirmas la eliminación permanente de la factura ${invoice.invoice_number} (${invoice.customer_name})?\nEsta acción borrará de forma definitiva el registro de factura.`
-    );
-    if (!confirmDelete) return;
-
-    try {
-      await deleteInvoice(invoice.id);
-      triggerGlobalRefresh();
-    } catch (err: any) {
-      alert(`Error al eliminar factura: ${err.message}`);
     }
   };
 
@@ -275,18 +264,11 @@ export const AdminInvoices: React.FC<AdminInvoicesProps> = ({
                           <button
                             onClick={() => handleCancelInvoice(inv)}
                             className="px-2 py-1 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/20 text-amber-400 rounded-lg text-[10px] font-black uppercase tracking-wider cursor-pointer transition-colors"
-                            title="Anular factura"
+                            title="Anular comprobante oficialmente"
                           >
                             ANULAR
                           </button>
                         )}
-                        <button
-                          onClick={(e) => handleDeleteInvoice(inv, e)}
-                          className="p-1.5 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 rounded-lg text-[10px] font-black uppercase tracking-wider cursor-pointer transition-colors"
-                          title="Eliminar factura definitivamente"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
                       </div>
                     </td>
                   </tr>

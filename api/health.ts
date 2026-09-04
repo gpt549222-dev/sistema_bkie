@@ -11,8 +11,7 @@ export default function handler(req: VercelRequest, res: VercelResponse) {
 
   const hasGemini = Boolean(
     process.env.GEMINI_API_KEY ||
-    process.env.GOOGLE_GENAI_API_KEY ||
-    process.env.VITE_GEMINI_API_KEY
+    process.env.GOOGLE_GENAI_API_KEY
   );
 
   const hasSupabase = Boolean(

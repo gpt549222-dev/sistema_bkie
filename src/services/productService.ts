@@ -153,8 +153,10 @@ export async function updateProduct(
   if (productData.cost_price !== undefined) {
     payload.cost_price = Number(productData.cost_price);
   }
+  // CRÍTICO: updateProduct NO debe permitir modificar 'stock' directamente.
+  // Cualquier cambio de stock debe ser atómico y auditado vía adjustStock / adjust_product_stock_atomic.
   if (productData.stock !== undefined) {
-    payload.stock = Math.floor(Number(productData.stock));
+    console.warn('Modificación directa de stock rechazada en updateProduct. El stock debe gestionarse mediante adjustStock() para trazabilidad en inventario.');
   }
   if (productData.min_stock !== undefined) {
     payload.min_stock = Math.floor(Number(productData.min_stock));
@@ -222,77 +224,30 @@ export async function adjustStock(
   note?: string,
   user?: string
 ): Promise<Product> {
-  // 1. Try atomic PostgreSQL RPC with row-level lock (FOR UPDATE)
-  try {
-    const { data: rpcData, error: rpcError } = await supabase.rpc('adjust_product_stock_atomic', {
-      p_product_id: productId,
-      p_quantity_change: quantityChange,
-      p_type: type,
-      p_note: note || null,
-      p_user: user || 'admin',
-    });
+  // CRÍTICO: Operación de inventario 100% atómica y segura en PostgreSQL (FOR UPDATE)
+  // Sin fallbacks directos del cliente para prevenir condiciones de carrera y desincronización en Kardex.
+  const { data: rpcData, error: rpcError } = await supabase.rpc('adjust_product_stock_atomic', {
+    p_product_id: productId,
+    p_quantity_change: quantityChange,
+    p_type: type,
+    p_note: note || null,
+    p_user: user || 'admin',
+  });
 
-    if (rpcError) {
-      if (rpcError.message && (rpcError.message.includes('Stock insuficiente') || rpcError.message.includes('denegada'))) {
-        throw new Error(rpcError.message);
-      }
-      throw rpcError;
-    }
-
-    if (rpcData?.success) {
-      const refreshed = await getProduct(productId);
-      if (refreshed) return refreshed;
-    }
-  } catch (err: any) {
-    if (err.message && (err.message.includes('Stock insuficiente') || err.message.includes('denegada'))) {
-      throw err;
-    }
-    console.warn('RPC adjust_product_stock_atomic fallback:', err);
+  if (rpcError) {
+    throw new Error(rpcError.message || 'Error al ajustar el inventario de forma atómica en la base de datos.');
   }
 
-  // 2. Direct fallback
-  const current = await getProduct(productId);
-  if (!current) throw new Error('Producto no encontrado');
-
-  const newStock = current.stock + quantityChange;
-  if (newStock < 0) {
-    throw new Error(`Stock insuficiente. El stock actual es ${current.stock} y no puede quedar negativo.`);
+  if (!rpcData?.success) {
+    throw new Error('La operación de ajuste de stock no pudo ser completada por la base de datos.');
   }
 
-  const { data: updatedProduct, error: updateError } = await supabase
-    .from('products')
-    .update({
-      stock: newStock,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', productId)
-    .select('*, category:categories(*)')
-    .single();
-
-  if (updateError) {
-    throw new Error(`Error al actualizar stock: ${updateError.message}`);
+  const refreshed = await getProduct(productId);
+  if (!refreshed) {
+    throw new Error('Producto actualizado correctamente en base de datos, pero no se pudo recargar.');
   }
 
-  try {
-    await supabase.from('inventory_movements').insert({
-      product_id: productId,
-      type,
-      quantity: Math.abs(quantityChange),
-      previous_stock: current.stock,
-      new_stock: newStock,
-      note: note || `Ajuste manual de stock (${type})`,
-    });
-  } catch (err) {
-    console.warn('Could not record inventory movement:', err);
-  }
-
-  return {
-    ...updatedProduct,
-    price: Number(updatedProduct.price) || 0,
-    cost_price: Number(updatedProduct.cost_price) || 0,
-    stock: Number(updatedProduct.stock) || 0,
-    min_stock: Number(updatedProduct.min_stock) || 0,
-  };
+  return refreshed;
 }
 
 export async function getCategories(): Promise<Category[]> {

@@ -588,7 +588,7 @@ CREATE POLICY "Admin update settings" ON public.settings FOR ALL USING (public.i
 -- 7. PROCEDIMIENTOS Y FUNCIONES ATÓMICAS (CONCURRENCY SAFE CON FOR UPDATE)
 -- ==============================================================================
 
--- 7.1 RASTREO PÚBLICO SEGURO DE PEDIDOS POR NÚMERO
+-- 7.1 RASTREO PÚBLICO SEGURO DE PEDIDOS POR NÚMERO (DATOS PRIVADOS PROTEGIDOS)
 CREATE OR REPLACE FUNCTION public.track_order(p_order_number TEXT)
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -598,9 +598,9 @@ DECLARE
     v_order RECORD;
     v_items JSONB;
     v_history JSONB;
-    v_payments JSONB;
 BEGIN
-    SELECT * INTO v_order 
+    SELECT id, order_number, customer_name, total, status, payment_method, payment_status, created_at
+    INTO v_order 
     FROM public.orders 
     WHERE upper(trim(order_number)) = upper(trim(p_order_number))
     LIMIT 1;
@@ -609,43 +609,50 @@ BEGIN
         RETURN NULL;
     END IF;
 
-    SELECT COALESCE(jsonb_agg(row_to_json(i)), '[]'::jsonb) INTO v_items
+    -- Solo devolver campos no sensibles de items (sin datos internos)
+    SELECT COALESCE(jsonb_agg(
+        jsonb_build_object(
+            'id', i.id,
+            'product_id', i.product_id,
+            'product_name', i.product_name,
+            'quantity', i.quantity,
+            'unit_price', i.unit_price,
+            'total_price', i.total_price
+        )
+    ), '[]'::jsonb) INTO v_items
     FROM public.order_items i
     WHERE i.order_id = v_order.id;
 
-    SELECT COALESCE(jsonb_agg(row_to_json(h) ORDER BY h.created_at ASC), '[]'::jsonb) INTO v_history
+    -- Historial básico público de cambios de estado (sin notas internas o confidenciales)
+    SELECT COALESCE(jsonb_agg(
+        jsonb_build_object(
+            'id', h.id,
+            'status', h.status,
+            'new_status', h.new_status,
+            'note', h.note,
+            'created_at', h.created_at
+        ) ORDER BY h.created_at ASC
+    ), '[]'::jsonb) INTO v_history
     FROM public.order_status_history h
     WHERE h.order_id = v_order.id;
 
-    SELECT COALESCE(jsonb_agg(row_to_json(p)), '[]'::jsonb) INTO v_payments
-    FROM public.payments p
-    WHERE p.order_id = v_order.id;
-
+    -- NUNCA devolver teléfono, email, dirección, notas privadas ni cuentas/referencias de pagos
     RETURN jsonb_build_object(
         'id', v_order.id,
         'order_number', v_order.order_number,
         'customer_name', v_order.customer_name,
-        'customer_phone', v_order.customer_phone,
-        'customer_email', v_order.customer_email,
-        'delivery_address', v_order.delivery_address,
-        'subtotal', v_order.subtotal,
-        'discount', v_order.discount,
-        'tax', v_order.tax,
         'total', v_order.total,
         'status', v_order.status,
         'payment_method', v_order.payment_method,
         'payment_status', v_order.payment_status,
-        'notes', v_order.notes,
         'created_at', v_order.created_at,
-        'updated_at', v_order.updated_at,
         'items', v_items,
-        'history', v_history,
-        'payments', v_payments
+        'history', v_history
     );
 END;
 $$;
 
--- 7.2 CONSULTA PÚBLICA SEGURA DE FACTURA POR PEDIDO
+-- 7.2 CONSULTA PÚBLICA SEGURA DE FACTURA POR PEDIDO (DATOS PERSONALES PROTEGIDOS)
 CREATE OR REPLACE FUNCTION public.get_invoice_by_order(p_order_id UUID)
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -655,7 +662,8 @@ DECLARE
     v_invoice RECORD;
     v_items JSONB;
 BEGIN
-    SELECT * INTO v_invoice
+    SELECT id, invoice_number, order_id, customer_name, subtotal, discount, tax, total, currency, payment_method, payment_status, status, paid_at, created_at
+    INTO v_invoice
     FROM public.invoices
     WHERE order_id = p_order_id
     ORDER BY created_at DESC
@@ -665,19 +673,27 @@ BEGIN
         RETURN NULL;
     END IF;
 
-    SELECT COALESCE(jsonb_agg(row_to_json(i)), '[]'::jsonb) INTO v_items
+    -- Solo devolver campos indispensables para validar la factura
+    SELECT COALESCE(jsonb_agg(
+        jsonb_build_object(
+            'id', i.id,
+            'product_id', i.product_id,
+            'product_name', i.product_name,
+            'quantity', i.quantity,
+            'unit_price', i.unit_price,
+            'discount_amount', i.discount_amount,
+            'total', i.total
+        )
+    ), '[]'::jsonb) INTO v_items
     FROM public.invoice_items i
     WHERE i.invoice_id = v_invoice.id;
 
+    -- NUNCA exponer customer_phone, customer_address, customer_id_doc ni customer_id públicamente
     RETURN jsonb_build_object(
         'id', v_invoice.id,
         'invoice_number', v_invoice.invoice_number,
         'order_id', v_invoice.order_id,
-        'customer_id', v_invoice.customer_id,
         'customer_name', v_invoice.customer_name,
-        'customer_id_doc', v_invoice.customer_id_doc,
-        'customer_phone', v_invoice.customer_phone,
-        'customer_address', v_invoice.customer_address,
         'subtotal', v_invoice.subtotal,
         'discount', v_invoice.discount,
         'tax', v_invoice.tax,
@@ -686,7 +702,6 @@ BEGIN
         'payment_method', v_invoice.payment_method,
         'payment_status', v_invoice.payment_status,
         'status', v_invoice.status,
-        'notes', v_invoice.notes,
         'paid_at', v_invoice.paid_at,
         'created_at', v_invoice.created_at,
         'items', v_items
@@ -982,16 +997,17 @@ END;
 $$;
 
 -- 7.5 VENTA DIRECTA POS ATÓMICA EN UNA SOLA TRANSACCIÓN (CAJA / MOSTRADOR)
+-- SEGURIDAD CRÍTICA: NUNCA CONFÍA EN PRECIOS, SUBTOTAIS, DESCUENTOS NI TOTALES DEL FRONTEND
 CREATE OR REPLACE FUNCTION public.process_pos_sale_atomic(
     p_order_number TEXT DEFAULT NULL,
     p_customer_name TEXT DEFAULT 'Cliente Mostrador',
     p_customer_phone TEXT DEFAULT 'N/A',
     p_customer_id_doc TEXT DEFAULT NULL,
     p_customer_address TEXT DEFAULT 'Mostrador POS BIKIE',
-    p_subtotal NUMERIC(14,2) DEFAULT 0,
-    p_discount NUMERIC(14,2) DEFAULT 0,
-    p_tax NUMERIC(14,2) DEFAULT 0,
-    p_total NUMERIC(14,2) DEFAULT 0,
+    p_subtotal NUMERIC(14,2) DEFAULT NULL, -- Ignorado por seguridad
+    p_discount NUMERIC(14,2) DEFAULT NULL, -- Ignorado por seguridad
+    p_tax NUMERIC(14,2) DEFAULT NULL,      -- Ignorado por seguridad
+    p_total NUMERIC(14,2) DEFAULT NULL,    -- Ignorado por seguridad
     p_payment_method TEXT DEFAULT 'cash',
     p_reference TEXT DEFAULT NULL,
     p_cashier_name TEXT DEFAULT 'Cajero',
@@ -1011,16 +1027,25 @@ DECLARE
     v_invoice_number TEXT;
     v_item RECORD;
     v_product RECORD;
+    v_offer RECORD;
+    v_base_price NUMERIC(14,2);
+    v_item_discount NUMERIC(14,2);
+    v_final_unit_price NUMERIC(14,2);
+    v_item_total NUMERIC(14,2);
+    v_calculated_subtotal NUMERIC(14,2) := 0;
+    v_calculated_discount NUMERIC(14,2) := 0;
+    v_calculated_tax NUMERIC(14,2) := 0;
+    v_calculated_total NUMERIC(14,2) := 0;
     v_curr_year TEXT := to_char(now(), 'YYYY');
     v_curr_month TEXT := to_char(now(), 'MM');
     v_seq_num BIGINT;
 BEGIN
     IF NOT public.is_admin() THEN
-        RAISE EXCEPTION 'Solo personal autorizado puede registrar ventas POS.';
+        RAISE EXCEPTION 'Operación denegada: Solo personal autorizado puede registrar ventas POS.';
     END IF;
 
     IF p_items IS NULL OR jsonb_array_length(p_items) = 0 THEN
-        RAISE EXCEPTION 'La venta debe contener al menos un producto o servicio.';
+        RAISE EXCEPTION 'La venta POS debe contener al menos un producto válido.';
     END IF;
 
     -- Generar o asegurar número de pedido único y seguro desde la secuencia
@@ -1031,85 +1056,152 @@ BEGIN
         v_order_number := trim(p_order_number);
     END IF;
 
-    -- 1. Validar y descontar stock con bloqueo FOR UPDATE
+    -- 1. Validar productos, verificar stock con FOR UPDATE y calcular precios estrictamente desde la base de datos
     FOR v_item IN SELECT * FROM jsonb_to_recordset(p_items) AS x(
         product_id UUID,
-        product_name TEXT,
-        quantity INT,
-        original_unit_price NUMERIC(14,2),
-        unit_price NUMERIC(14,2),
-        discount_amount NUMERIC(14,2),
-        total_price NUMERIC(14,2)
+        quantity INT
     )
     LOOP
+        IF v_item.product_id IS NULL THEN
+            RAISE EXCEPTION 'ID de producto no especificado en venta POS.';
+        END IF;
+
+        IF v_item.quantity IS NULL OR v_item.quantity <= 0 THEN
+            RAISE EXCEPTION 'La cantidad para cada producto debe ser mayor a 0.';
+        END IF;
+
+        -- Bloqueo pesimista exclusivo de la fila del producto
         SELECT * INTO v_product
         FROM public.products
         WHERE id = v_item.product_id
         FOR UPDATE;
 
-        IF v_product IS NOT NULL THEN
-            IF v_product.stock < v_item.quantity THEN
-                RAISE EXCEPTION 'Stock insuficiente para "%". Disponible: %, Solicitado en caja: %',
-                    v_product.name, v_product.stock, v_item.quantity;
-            END IF;
-
-            UPDATE public.products
-            SET stock = stock - v_item.quantity, updated_at = now()
-            WHERE id = v_item.product_id;
-
-            INSERT INTO public.inventory_movements (
-                product_id, type, quantity, previous_stock, new_stock, note
-            ) VALUES (
-                v_item.product_id, 'sale', v_item.quantity,
-                v_product.stock, (v_product.stock - v_item.quantity),
-                'Venta Mostrador POS #' || v_order_number
-            );
+        IF v_product IS NULL THEN
+            RAISE EXCEPTION 'Producto con ID % no encontrado en el catálogo.', v_item.product_id;
         END IF;
+
+        IF v_product.is_active IS FALSE THEN
+            RAISE EXCEPTION 'El producto "%" no se encuentra disponible para la venta.', v_product.name;
+        END IF;
+
+        IF v_product.stock < v_item.quantity THEN
+            RAISE EXCEPTION 'Stock insuficiente para "%". Disponible en tienda: %, Solicitado en caja: %',
+                v_product.name, v_product.stock, v_item.quantity;
+        END IF;
+
+        -- PRECIO REAL DE BASE DE DATOS (AUTORIDAD TOTAL EN POSTGRESQL)
+        v_base_price := v_product.price;
+        v_item_discount := 0;
+
+        -- Buscar oferta o promoción activa aplicable
+        SELECT o.* INTO v_offer
+        FROM public.offers o
+        LEFT JOIN public.offer_products op ON op.offer_id = o.id AND op.product_id = v_product.id
+        LEFT JOIN public.offer_categories oc ON oc.offer_id = o.id AND oc.category_id = v_product.category_id
+        WHERE o.status = 'active'
+          AND (o.is_global = true OR op.id IS NOT NULL OR oc.id IS NOT NULL)
+          AND (o.start_date <= now() AND o.end_date >= now())
+        ORDER BY o.priority DESC, o.value DESC
+        LIMIT 1;
+
+        IF v_offer.id IS NOT NULL THEN
+            IF v_offer.type = 'percentage' THEN
+                v_item_discount := ROUND(v_base_price * (v_offer.value / 100.0), 2);
+            ELSIF v_offer.type = 'fixed_discount' THEN
+                v_item_discount := LEAST(v_base_price, v_offer.value);
+            ELSIF v_offer.type = 'special_price' THEN
+                v_item_discount := GREATEST(0, v_base_price - v_offer.value);
+            END IF;
+        END IF;
+
+        v_final_unit_price := GREATEST(0, v_base_price - v_item_discount);
+        v_item_total := v_final_unit_price * v_item.quantity;
+
+        v_calculated_subtotal := v_calculated_subtotal + (v_base_price * v_item.quantity);
+        v_calculated_discount := v_calculated_discount + (v_item_discount * v_item.quantity);
+        v_calculated_total := v_calculated_total + v_item_total;
+
+        -- Descontar stock inmediatamente dentro de la misma transacción atómica
+        UPDATE public.products
+        SET stock = stock - v_item.quantity, updated_at = now()
+        WHERE id = v_product.id;
+
+        INSERT INTO public.inventory_movements (
+            product_id, type, quantity, previous_stock, new_stock, note
+        ) VALUES (
+            v_product.id, 'sale', v_item.quantity,
+            v_product.stock, (v_product.stock - v_item.quantity),
+            'Venta Mostrador POS #' || v_order_number
+        );
     END LOOP;
 
-    -- 2. Crear Pedido Completado
+    -- 2. Crear Pedido Completado con los totales calculados por la base de datos
     INSERT INTO public.orders (
         order_number, customer_name, customer_phone, customer_email, delivery_address,
         subtotal, discount, tax, total, status, payment_method, payment_status, notes
     ) VALUES (
-        v_order_number, COALESCE(p_customer_name, 'Cliente Mostrador'),
-        COALESCE(p_customer_phone, 'N/A'), NULL,
-        COALESCE(p_customer_address, 'Mostrador POS BIKIE'),
-        p_subtotal, p_discount, p_tax, p_total,
-        'delivered', p_payment_method, 'confirmed',
+        v_order_number, COALESCE(trim(p_customer_name), 'Cliente Mostrador'),
+        COALESCE(trim(p_customer_phone), 'N/A'), NULL,
+        COALESCE(trim(p_customer_address), 'Mostrador POS BIKIE'),
+        v_calculated_subtotal, v_calculated_discount, v_calculated_tax, v_calculated_total,
+        'delivered', COALESCE(p_payment_method, 'cash'), 'confirmed',
         COALESCE(p_notes, 'Venta en mostrador POS')
     ) RETURNING id INTO v_order_id;
 
-    -- 3. Crear Items de Pedido
+    -- 3. Crear Items de Pedido con precios oficiales de la base de datos
     FOR v_item IN SELECT * FROM jsonb_to_recordset(p_items) AS x(
         product_id UUID,
-        product_name TEXT,
-        quantity INT,
-        original_unit_price NUMERIC(14,2),
-        unit_price NUMERIC(14,2),
-        discount_amount NUMERIC(14,2),
-        total_price NUMERIC(14,2)
+        quantity INT
     )
     LOOP
+        SELECT * INTO v_product FROM public.products WHERE id = v_item.product_id;
+
+        v_base_price := v_product.price;
+        v_item_discount := 0;
+
+        SELECT o.* INTO v_offer
+        FROM public.offers o
+        LEFT JOIN public.offer_products op ON op.offer_id = o.id AND op.product_id = v_product.id
+        LEFT JOIN public.offer_categories oc ON oc.offer_id = o.id AND oc.category_id = v_product.category_id
+        WHERE o.status = 'active'
+          AND (o.is_global = true OR op.id IS NOT NULL OR oc.id IS NOT NULL)
+          AND (o.start_date <= now() AND o.end_date >= now())
+        ORDER BY o.priority DESC, o.value DESC
+        LIMIT 1;
+
+        IF v_offer.id IS NOT NULL THEN
+            IF v_offer.type = 'percentage' THEN
+                v_item_discount := ROUND(v_base_price * (v_offer.value / 100.0), 2);
+            ELSIF v_offer.type = 'fixed_discount' THEN
+                v_item_discount := LEAST(v_base_price, v_offer.value);
+            ELSIF v_offer.type = 'special_price' THEN
+                v_item_discount := GREATEST(0, v_base_price - v_offer.value);
+            END IF;
+        END IF;
+
+        v_final_unit_price := GREATEST(0, v_base_price - v_item_discount);
+        v_item_total := v_final_unit_price * v_item.quantity;
+
         INSERT INTO public.order_items (
             order_id, product_id, product_name, quantity, original_unit_price,
             unit_price, discount_amount, total_price
         ) VALUES (
-            v_order_id, v_item.product_id, v_item.product_name, v_item.quantity,
-            v_item.original_unit_price, v_item.unit_price,
-            v_item.discount_amount, v_item.total_price
+            v_order_id, v_product.id, v_product.name, v_item.quantity,
+            v_base_price, v_final_unit_price,
+            v_item_discount, v_item_total
         );
     END LOOP;
 
-    -- 4. Registrar Pago
+    -- 4. Registrar Pago Confirmado por el total real calculado
     INSERT INTO public.payments (
         order_id, payment_method, method, amount, status, reference, verified_at, verified_by
     ) VALUES (
-        v_order_id, p_payment_method, p_payment_method, p_total, 'confirmed',
+        v_order_id, COALESCE(p_payment_method, 'cash'), COALESCE(p_payment_method, 'cash'),
+        v_calculated_total, 'confirmed',
         p_reference, now(), p_cashier_name
     ) RETURNING id INTO v_payment_id;
 
-    -- 5. Generar Secuencia y Factura
+    -- 5. Generar Secuencia y Factura Oficial
     SELECT nextval('invoice_number_seq') INTO v_seq_num;
     v_invoice_number := 'FAC-' || v_curr_year || v_curr_month || '-' || LPAD(v_seq_num::TEXT, 5, '0');
 
@@ -1118,46 +1210,69 @@ BEGIN
         customer_address, subtotal, discount, tax, total, currency,
         payment_method, payment_status, status, notes, paid_at
     ) VALUES (
-        v_invoice_number, v_order_id, COALESCE(p_customer_name, 'Cliente Mostrador'),
+        v_invoice_number, v_order_id, COALESCE(trim(p_customer_name), 'Cliente Mostrador'),
         p_customer_id_doc, p_customer_phone, p_customer_address,
-        p_subtotal, p_discount, p_tax, p_total, 'XAF',
-        p_payment_method, 'paid', 'paid', p_notes, now()
+        v_calculated_subtotal, v_calculated_discount, v_calculated_tax, v_calculated_total, 'XAF',
+        COALESCE(p_payment_method, 'cash'), 'paid', 'paid', p_notes, now()
     ) RETURNING id INTO v_invoice_id;
 
-    -- 6. Items de Factura
+    -- 6. Items de Factura con datos de BD
     FOR v_item IN SELECT * FROM jsonb_to_recordset(p_items) AS x(
         product_id UUID,
-        product_name TEXT,
-        quantity INT,
-        original_unit_price NUMERIC(14,2),
-        unit_price NUMERIC(14,2),
-        discount_amount NUMERIC(14,2),
-        total_price NUMERIC(14,2)
+        quantity INT
     )
     LOOP
+        SELECT * INTO v_product FROM public.products WHERE id = v_item.product_id;
+
+        v_base_price := v_product.price;
+        v_item_discount := 0;
+
+        SELECT o.* INTO v_offer
+        FROM public.offers o
+        LEFT JOIN public.offer_products op ON op.offer_id = o.id AND op.product_id = v_product.id
+        LEFT JOIN public.offer_categories oc ON oc.offer_id = o.id AND oc.category_id = v_product.category_id
+        WHERE o.status = 'active'
+          AND (o.is_global = true OR op.id IS NOT NULL OR oc.id IS NOT NULL)
+          AND (o.start_date <= now() AND o.end_date >= now())
+        ORDER BY o.priority DESC, o.value DESC
+        LIMIT 1;
+
+        IF v_offer.id IS NOT NULL THEN
+            IF v_offer.type = 'percentage' THEN
+                v_item_discount := ROUND(v_base_price * (v_offer.value / 100.0), 2);
+            ELSIF v_offer.type = 'fixed_discount' THEN
+                v_item_discount := LEAST(v_base_price, v_offer.value);
+            ELSIF v_offer.type = 'special_price' THEN
+                v_item_discount := GREATEST(0, v_base_price - v_offer.value);
+            END IF;
+        END IF;
+
+        v_final_unit_price := GREATEST(0, v_base_price - v_item_discount);
+        v_item_total := v_final_unit_price * v_item.quantity;
+
         INSERT INTO public.invoice_items (
             invoice_id, product_id, product_name, quantity,
             original_unit_price, unit_price, discount_amount, total
         ) VALUES (
-            v_invoice_id, v_item.product_id, v_item.product_name, v_item.quantity,
-            v_item.original_unit_price, v_item.unit_price,
-            v_item.discount_amount, v_item.total_price
+            v_invoice_id, v_product.id, v_product.name, v_item.quantity,
+            v_base_price, v_final_unit_price,
+            v_item_discount, v_item_total
         );
     END LOOP;
 
-    -- 7. Registrar Venta
+    -- 7. Registrar Venta en Libro Diario
     INSERT INTO public.sales (
         sale_number, invoice_id, order_id, cashier_name, total_amount, payment_method
     ) VALUES (
         'VTA-' || v_curr_year || '-' || LPAD(nextval('sale_number_seq')::TEXT, 6, '0'),
-        v_invoice_id, v_order_id, p_cashier_name, p_total, p_payment_method
+        v_invoice_id, v_order_id, p_cashier_name, v_calculated_total, COALESCE(p_payment_method, 'cash')
     ) RETURNING id INTO v_sale_id;
 
-    -- 8. Notificación
+    -- 8. Notificación y registro
     INSERT INTO public.notifications (title, message, type, order_id)
     VALUES (
         'Venta POS #' || v_invoice_number,
-        'Cajero: ' || p_cashier_name || ' • Monto: ' || p_total || ' FCFA',
+        'Cajero: ' || p_cashier_name || ' • Total oficial: ' || v_calculated_total || ' FCFA',
         'payment_confirmed',
         v_order_id
     );
@@ -1170,7 +1285,10 @@ BEGIN
         'invoice_number', v_invoice_number,
         'payment_id', v_payment_id,
         'sale_id', v_sale_id,
-        'total', p_total
+        'subtotal', v_calculated_subtotal,
+        'discount', v_calculated_discount,
+        'tax', v_calculated_tax,
+        'total', v_calculated_total
     );
 END;
 $$;
@@ -1255,6 +1373,7 @@ END;
 $$;
 
 -- 7.7 CONFIRMACIÓN DE PAGO Y EMISIÓN ATÓMICA DE FACTURA
+-- SEGURIDAD CRÍTICA: LA BASE DE DATOS CONTROLA ESTADOS, SALDOS Y TRANSACCIONES
 CREATE OR REPLACE FUNCTION public.process_payment_and_invoice(
     p_order_id UUID,
     p_payment_method TEXT,
@@ -1275,15 +1394,18 @@ DECLARE
     v_already_paid NUMERIC(14,2) := 0;
     v_pending_balance NUMERIC(14,2);
     v_new_paid_total NUMERIC(14,2);
+    v_order_payment_status TEXT;
+    v_invoice_status TEXT;
+    v_paid_at TIMESTAMPTZ := NULL;
     v_curr_year TEXT := to_char(now(), 'YYYY');
     v_curr_month TEXT := to_char(now(), 'MM');
     v_seq_num BIGINT;
 BEGIN
     IF NOT public.is_admin() THEN
-        RAISE EXCEPTION 'Solo administradores pueden registrar pagos y emitir facturas.';
+        RAISE EXCEPTION 'Operación denegada: Solo administradores pueden registrar pagos y emitir facturas.';
     END IF;
 
-    -- Bloquear pedido con FOR UPDATE para evitar colisiones
+    -- Bloquear pedido con FOR UPDATE para garantizar consistencia transaccional
     SELECT * INTO v_order
     FROM public.orders
     WHERE id = p_order_id
@@ -1294,53 +1416,61 @@ BEGIN
     END IF;
 
     IF v_order.status = 'cancelled' THEN
-        RAISE EXCEPTION 'No se puede registrar un pago ni emitir factura para un pedido cancelado.';
+        RAISE EXCEPTION 'No se puede registrar pagos ni emitir facturas para un pedido cancelado.';
     END IF;
 
-    -- Comprobar importe frente al saldo pendiente real
+    IF p_amount IS NULL OR p_amount <= 0 THEN
+        RAISE EXCEPTION 'El monto del pago debe ser estrictamente mayor a 0 FCFA.';
+    END IF;
+
+    -- Comprobar importe frente a los pagos acumulados confirmados en PostgreSQL
     SELECT COALESCE(SUM(amount), 0) INTO v_already_paid
     FROM public.payments
     WHERE order_id = p_order_id AND status = 'confirmed';
 
     v_pending_balance := GREATEST(0, v_order.total - v_already_paid);
 
-    IF p_amount <= 0 THEN
-        RAISE EXCEPTION 'El monto del pago debe ser mayor a 0 FCFA.';
+    IF v_pending_balance <= 0 THEN
+        RAISE EXCEPTION 'El pedido ya se encuentra totalmente liquidado. Saldo pendiente: 0 FCFA.';
     END IF;
 
     IF p_amount > v_pending_balance THEN
-        RAISE EXCEPTION 'El importe a pagar (% FCFA) no puede exceder el saldo pendiente del pedido (% FCFA).', p_amount, v_pending_balance;
+        RAISE EXCEPTION 'El importe a pagar (% FCFA) no puede exceder el saldo pendiente real (% FCFA).', p_amount, v_pending_balance;
     END IF;
 
     v_new_paid_total := v_already_paid + p_amount;
+
+    -- La base de datos decide si el estado es liquidado ('paid'/'confirmed') o parcial ('partial')
+    IF v_new_paid_total >= v_order.total THEN
+        v_order_payment_status := 'confirmed';
+        v_invoice_status := 'paid';
+        v_paid_at := now();
+    ELSE
+        v_order_payment_status := 'partial';
+        v_invoice_status := 'partial';
+        v_paid_at := NULL;
+    END IF;
 
     -- 1. Insertar Pago confirmado
     INSERT INTO public.payments (
         order_id, payment_method, method, amount, status, reference, notes, paid_at, verified_at, verified_by
     ) VALUES (
-        p_order_id, p_payment_method, p_payment_method, p_amount, 'confirmed', p_reference,
-        'Cobrado por ' || p_cashier_name, now(), now(), p_cashier_name
+        p_order_id, COALESCE(p_payment_method, 'cash'), COALESCE(p_payment_method, 'cash'), p_amount, 'confirmed', p_reference,
+        'Cobrado por ' || COALESCE(p_cashier_name, 'Caja'), now(), now(), p_cashier_name
     ) RETURNING id INTO v_payment_id;
 
-    -- 2. Actualizar estado del Pedido
-    IF v_new_paid_total >= v_order.total THEN
-        UPDATE public.orders
-        SET payment_status = 'confirmed',
-            payment_method = p_payment_method,
-            updated_at = now()
-        WHERE id = p_order_id;
-    ELSE
-        UPDATE public.orders
-        SET payment_method = p_payment_method,
-            updated_at = now()
-        WHERE id = p_order_id;
-    END IF;
+    -- 2. Actualizar estado del Pedido en base al cálculo determinista
+    UPDATE public.orders
+    SET payment_status = v_order_payment_status,
+        payment_method = COALESCE(p_payment_method, payment_method),
+        updated_at = now()
+    WHERE id = p_order_id;
 
-    -- 3. Emitir o reutilizar factura si ya existía
+    -- 3. Emitir o actualizar factura garantizando atomicidad
     SELECT id, invoice_number INTO v_invoice_id, v_invoice_number
     FROM public.invoices
     WHERE order_id = p_order_id
-    LIMIT 1;
+    FOR UPDATE;
 
     IF v_invoice_id IS NULL THEN
         SELECT nextval('invoice_number_seq') INTO v_seq_num;
@@ -1354,7 +1484,8 @@ BEGIN
             v_invoice_number, p_order_id, v_order.customer_id, v_order.customer_name,
             NULL, v_order.customer_phone, v_order.delivery_address,
             v_order.subtotal, v_order.discount, v_order.tax, v_order.total,
-            'XAF', p_payment_method, 'paid', 'paid', 'Factura oficial BIKIE Papelería', now()
+            'XAF', COALESCE(p_payment_method, 'cash'), v_invoice_status, v_invoice_status,
+            'Factura oficial BIKIE Papelería', v_paid_at
         ) RETURNING id INTO v_invoice_id;
 
         -- Copiar items de pedido a ítems de factura
@@ -1369,19 +1500,28 @@ BEGIN
                 v_item.discount_amount, v_item.total_price
             );
         END LOOP;
+    ELSE
+        -- Si la factura ya existía, sincronizar su estado de pago de forma segura
+        UPDATE public.invoices
+        SET payment_status = v_invoice_status,
+            status = v_invoice_status,
+            payment_method = COALESCE(p_payment_method, payment_method),
+            paid_at = COALESCE(v_paid_at, paid_at),
+            updated_at = now()
+        WHERE id = v_invoice_id;
     END IF;
 
     -- 4. Historial y Notificación
     INSERT INTO public.order_status_history (order_id, status, previous_status, new_status, changed_by, note)
     VALUES (
         p_order_id, v_order.status, v_order.status, v_order.status, p_cashier_name,
-        'Pago confirmado (' || p_amount || ' FCFA) vía ' || p_payment_method || ' y factura ' || v_invoice_number || ' emitida.'
+        'Pago de ' || p_amount || ' FCFA confirmado (' || v_invoice_status || '). Factura: ' || v_invoice_number || '. Saldo: ' || GREATEST(0, v_order.total - v_new_paid_total) || ' FCFA.'
     );
 
     INSERT INTO public.notifications (title, message, type, order_id)
     VALUES (
         'Pago Confirmado Pedido #' || v_order.order_number,
-        'Factura: ' || v_invoice_number || ' • Monto: ' || p_amount || ' FCFA',
+        'Factura: ' || v_invoice_number || ' • Monto: ' || p_amount || ' FCFA • Estado: ' || v_invoice_status,
         'payment_confirmed',
         p_order_id
     );
@@ -1394,7 +1534,9 @@ BEGIN
         'invoice_number', v_invoice_number,
         'amount_paid', p_amount,
         'total_paid', v_new_paid_total,
-        'remaining_balance', GREATEST(0, v_order.total - v_new_paid_total)
+        'remaining_balance', GREATEST(0, v_order.total - v_new_paid_total),
+        'payment_status', v_order_payment_status,
+        'invoice_status', v_invoice_status
     );
 END;
 $$;
@@ -1449,6 +1591,104 @@ BEGIN
     );
 END;
 $$;
+
+-- 7.9 CANCELACIÓN ATÓMICA Y LÓGICA DE FACTURA (ANTIFRAUDE, PROHIBIDO DELETE)
+CREATE OR REPLACE FUNCTION public.cancel_invoice_atomic(
+    p_invoice_id UUID,
+    p_reason TEXT DEFAULT 'Anulación por administrador',
+    p_cancelled_by TEXT DEFAULT 'Administrador'
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_invoice RECORD;
+BEGIN
+    IF NOT public.is_admin() THEN
+        RAISE EXCEPTION 'Operación denegada: Solo administradores pueden cancelar facturas.';
+    END IF;
+
+    SELECT * INTO v_invoice
+    FROM public.invoices
+    WHERE id = p_invoice_id
+    FOR UPDATE;
+
+    IF v_invoice IS NULL THEN
+        RAISE EXCEPTION 'Factura con ID % no encontrada.', p_invoice_id;
+    END IF;
+
+    IF v_invoice.status = 'cancelled' THEN
+        RAISE EXCEPTION 'La factura % ya se encuentra anulada.', v_invoice.invoice_number;
+    END IF;
+
+    -- Cancelación lógica inmutable (prohíbe borrado físico por trazabilidad fiscal y contable)
+    UPDATE public.invoices
+    SET status = 'cancelled',
+        payment_status = 'cancelled',
+        notes = COALESCE(notes || E'\n', '') || 'ANULADA el ' || to_char(now(), 'YYYY-MM-DD HH24:MI:SS') || ' por ' || COALESCE(p_cancelled_by, 'Admin') || '. Motivo: ' || COALESCE(p_reason, 'Sin motivo especificado'),
+        updated_at = now()
+    WHERE id = p_invoice_id;
+
+    -- Si está vinculada a un pedido, registrar la anulación en el historial del pedido
+    IF v_invoice.order_id IS NOT NULL THEN
+        INSERT INTO public.order_status_history (
+            order_id, status, previous_status, new_status, changed_by, note
+        ) VALUES (
+            v_invoice.order_id, 'invoice_cancelled', 'invoice_active', 'invoice_cancelled',
+            p_cancelled_by, 'Factura ' || v_invoice.invoice_number || ' anulada: ' || COALESCE(p_reason, 'Sin motivo')
+        );
+    END IF;
+
+    RETURN jsonb_build_object(
+        'success', true,
+        'invoice_id', p_invoice_id,
+        'invoice_number', v_invoice.invoice_number,
+        'status', 'cancelled'
+    );
+END;
+$$;
+
+-- 7.10 ALIAS DE CANCELACIÓN ATÓMICA DE PEDIDOS
+CREATE OR REPLACE FUNCTION public.cancel_order_atomic(
+    p_order_id UUID,
+    p_reason TEXT DEFAULT 'Cancelación por administrador',
+    p_cancelled_by TEXT DEFAULT 'Administrador'
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+    RETURN public.cancel_order_with_stock_return(p_order_id, p_reason, p_cancelled_by);
+END;
+$$;
+
+-- ==============================================================================
+-- 7.11 PERMISOS EXPLÍCITOS PARA FUNCIONES SECURITY DEFINER
+-- ==============================================================================
+-- Revocar ejecución pública indiscriminada
+REVOKE ALL ON FUNCTION public.process_pos_sale_atomic(TEXT, TEXT, TEXT, TEXT, TEXT, NUMERIC, NUMERIC, NUMERIC, NUMERIC, TEXT, TEXT, TEXT, TEXT, JSONB) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.process_payment_and_invoice(UUID, TEXT, NUMERIC, TEXT, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.adjust_product_stock_atomic(UUID, INT, TEXT, TEXT, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.cancel_order_with_stock_return(UUID, TEXT, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.cancel_order_atomic(UUID, TEXT, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.cancel_invoice_atomic(UUID, TEXT, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.update_order_status_atomic(UUID, TEXT, TEXT, TEXT) FROM PUBLIC;
+
+-- Otorgar ejecución de funciones administrativas a usuarios autenticados (con validación is_admin() interna)
+GRANT EXECUTE ON FUNCTION public.process_pos_sale_atomic(TEXT, TEXT, TEXT, TEXT, TEXT, NUMERIC, NUMERIC, NUMERIC, NUMERIC, TEXT, TEXT, TEXT, TEXT, JSONB) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.process_payment_and_invoice(UUID, TEXT, NUMERIC, TEXT, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.adjust_product_stock_atomic(UUID, INT, TEXT, TEXT, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.cancel_order_with_stock_return(UUID, TEXT, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.cancel_order_atomic(UUID, TEXT, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.cancel_invoice_atomic(UUID, TEXT, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.update_order_status_atomic(UUID, TEXT, TEXT, TEXT) TO authenticated;
+
+-- Funciones públicas para storefront (crear pedidos y tracking)
+GRANT EXECUTE ON FUNCTION public.create_order_atomic(TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, JSONB) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.track_order(TEXT) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.get_invoice_by_order(UUID) TO anon, authenticated;
 
 -- ==============================================================================
 -- 8. CONFIGURACIÓN SUPABASE REALTIME

@@ -189,60 +189,29 @@ export async function cancelInvoice(
   invoiceId: string,
   reason = 'Anulación de factura por administrador'
 ): Promise<Invoice> {
-  const invoice = await getInvoice(invoiceId);
-  if (!invoice) throw new Error('Factura no encontrada');
-  if (invoice.status === 'cancelled') throw new Error('La factura ya está anulada');
+  // CRÍTICO: Cancelación atómica y lógica en PostgreSQL verificando permisos de administrador
+  const { data: rpcData, error: rpcError } = await supabase.rpc('cancel_invoice_atomic', {
+    p_invoice_id: invoiceId,
+    p_reason: reason,
+    p_cancelled_by: 'Admin BIKIE',
+  });
 
-  const notes = invoice.notes ? `${invoice.notes} | Anulada: ${reason}` : `Anulada: ${reason}`;
-
-  const { data, error } = await supabase
-    .from('invoices')
-    .update({
-      status: 'cancelled',
-      cancelled_at: new Date().toISOString(),
-      notes,
-    })
-    .eq('id', invoiceId)
-    .select('*, items:invoice_items(*)')
-    .single();
-
-  if (error) {
-    throw new Error(`Error al anular la factura: ${error.message}`);
+  if (rpcError) {
+    throw new Error(rpcError.message || 'Error al anular la factura en la base de datos.');
   }
 
-  return {
-    ...data,
-    subtotal: Number(data.subtotal) || 0,
-    discount: Number(data.discount) || 0,
-    tax: Number(data.tax) || 0,
-    total: Number(data.total) || 0,
-    items: (data.items || []).map((it: any) => ({
-      ...it,
-      original_unit_price: Number(it.original_unit_price) || 0,
-      unit_price: Number(it.unit_price) || 0,
-      discount_amount: Number(it.discount_amount) || 0,
-      total: Number(it.total) || 0,
-    })),
-  };
+  const updated = await getInvoice(invoiceId);
+  if (!updated) {
+    throw new Error('Factura anulada con éxito pero no se pudo recargar.');
+  }
+
+  return updated;
 }
 
 export async function deleteInvoice(invoiceId: string): Promise<boolean> {
-  try {
-    // 1. Delete associated invoice_items
-    await supabase.from('invoice_items').delete().eq('invoice_id', invoiceId);
-
-    // 2. Delete sales linked to this invoice
-    await supabase.from('sales').delete().eq('invoice_id', invoiceId);
-
-    // 3. Delete invoice
-    const { error } = await supabase.from('invoices').delete().eq('id', invoiceId);
-    if (error) {
-      throw new Error(`Error al eliminar factura de Supabase: ${error.message}`);
-    }
-  } catch (err: any) {
-    console.warn('Error deleting invoice from Supabase:', err);
-    throw err;
-  }
+  // CRÍTICO ANTIFRAUDE: Por normativa contable y fiscal, las facturas NUNCA se eliminan físicamente (DELETE).
+  // Se cancelan de forma lógica e inmutable mediante cancel_invoice_atomic.
+  await cancelInvoice(invoiceId, 'Cancelación lógica requerida (eliminación física prohibida por auditoría fiscal)');
   return true;
 }
 
@@ -253,17 +222,13 @@ export async function processDirectPosSale(payload: {
   customer_address?: string;
   items: Array<{
     product_id: string;
-    product_name: string;
     quantity: number;
-    original_unit_price: number;
-    unit_price: number;
-    discount_amount: number;
-    total: number;
+    [key: string]: any;
   }>;
-  subtotal: number;
-  discount: number;
-  tax: number;
-  total: number;
+  subtotal?: number;
+  discount?: number;
+  tax?: number;
+  total?: number;
   payment_method: PaymentMethod;
   reference?: string | null;
   cashier_name?: string;
@@ -279,17 +244,21 @@ export async function processDirectPosSale(payload: {
     throw new Error('La venta debe contener al menos un producto.');
   }
 
+  // CRÍTICO: El frontend envía ÚNICAMENTE product_id y quantity.
+  // PostgreSQL es la autoridad exclusiva que calcula precios, descuentos, impuestos y totales.
+  const secureItems = payload.items.map((it) => ({
+    product_id: it.product_id,
+    quantity: Math.max(1, Math.floor(it.quantity)),
+  }));
+
   // Ejecución atómica exclusiva con RPC en PostgreSQL (bloqueo FOR UPDATE de inventario, ACID sin fallbacks)
   const { data: rpcData, error: rpcError } = await supabase.rpc('process_pos_sale_atomic', {
-    p_customer_name: payload.customer_name.trim() || 'Cliente Mostrador',
+    p_customer_name: payload.customer_name?.trim() || 'Cliente Mostrador',
     p_customer_phone: payload.customer_phone?.trim() || 'N/A',
+    p_customer_id_doc: payload.customer_id_doc?.trim() || null,
     p_customer_address: payload.customer_address?.trim() || 'Mostrador POS BIKIE',
-    p_items: payload.items,
-    p_subtotal: payload.subtotal,
-    p_discount: payload.discount,
-    p_tax: payload.tax,
-    p_total: payload.total,
-    p_payment_method: payload.payment_method,
+    p_items: secureItems,
+    p_payment_method: payload.payment_method || 'cash',
     p_reference: payload.reference || null,
     p_cashier_name: payload.cashier_name || 'Admin BIKIE',
     p_notes: payload.notes || 'Venta directa en caja mostrador',

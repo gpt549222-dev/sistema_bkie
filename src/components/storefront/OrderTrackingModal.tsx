@@ -204,17 +204,16 @@ export const OrderTrackingModal: React.FC<OrderTrackingModalProps> = ({
               </div>
             )}
 
-            {/* Customer & Items Summary */}
+            {/* Order & Items Summary */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs font-mono">
               <div className="p-3.5 bg-[#141414] rounded-lg border border-white/10 space-y-1">
-                <p className="font-black text-white uppercase tracking-wider">DATOS DE ENTREGA:</p>
-                <p className="text-white/70">👤 {order.customer_name}</p>
-                <p className="text-white/70">📞 {order.customer_phone}</p>
-                {order.delivery_address && (
-                  <p className="text-white/70">📍 {order.delivery_address}</p>
-                )}
+                <p className="font-black text-white uppercase tracking-wider">RESUMEN DEL PEDIDO:</p>
+                <p className="text-white/70">👤 CLIENTE: {order.customer_name}</p>
+                <p className="text-white/50 text-[11px]">
+                  📅 FECHA: {order.created_at ? new Date(order.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'N/A'}
+                </p>
                 <p className="text-white/40 text-[10px] uppercase">
-                  💳 MÉTODO: {(order.payment_method || 'EFECTIVO').toUpperCase()} ({order.payment_status === 'confirmed' ? 'PAGADO' : 'PENDIENTE'})
+                  💳 ESTADO DE PAGO: {order.payment_status === 'confirmed' ? 'PAGADO' : 'PENDIENTE'}
                 </p>
               </div>
 

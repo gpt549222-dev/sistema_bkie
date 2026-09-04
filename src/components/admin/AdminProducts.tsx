@@ -52,7 +52,7 @@ export const AdminProducts: React.FC = () => {
 
   // Stock Adjustment Modal state
   const [stockModalProduct, setStockModalProduct] = useState<Product | null>(null);
-  const [stockAdjustmentType, setStockAdjustmentType] = useState<InventoryMovementType>('ajuste_manual');
+  const [stockAdjustmentType, setStockAdjustmentType] = useState<InventoryMovementType>('adjustment');
   const [stockAdjustmentQty, setStockAdjustmentQty] = useState<number>(0);
   const [stockAdjustmentReason, setStockAdjustmentReason] = useState<string>('');
   const [isAdjustingStock, setIsAdjustingStock] = useState(false);
@@ -117,6 +117,7 @@ export const AdminProducts: React.FC = () => {
 
     try {
       if (editingProduct) {
+        // Actualizar datos descriptivos y fiscales
         await updateProduct(editingProduct.id, {
           code: formData.code.trim(),
           name: formData.name.trim(),
@@ -124,11 +125,23 @@ export const AdminProducts: React.FC = () => {
           category_id: formData.category_id || undefined,
           price: Number(formData.price),
           cost_price: Number(formData.cost_price),
-          stock: Number(formData.stock),
           min_stock: Number(formData.min_stock),
           image_url: formData.image_url.trim() || undefined,
           is_active: formData.is_active,
         });
+
+        // Si el usuario modificó la cantidad de stock en la edición, pasar obligatoriamente por el RPC atómico
+        const targetStock = Number(formData.stock);
+        const stockDelta = targetStock - editingProduct.stock;
+        if (stockDelta !== 0) {
+          await adjustProductStock(
+            editingProduct.id,
+            stockDelta,
+            stockDelta > 0 ? 'purchase' : 'adjustment',
+            `Ajuste de inventario desde edición de producto (${stockDelta > 0 ? '+' : ''}${stockDelta})`,
+            'Administrador'
+          );
+        }
       } else {
         await createProduct({
           code: formData.code.trim(),
@@ -576,10 +589,11 @@ export const AdminProducts: React.FC = () => {
                   onChange={(e) => setStockAdjustmentType(e.target.value as InventoryMovementType)}
                   className="w-full p-2.5 bg-[#141414] border border-white/10 rounded-lg text-white uppercase focus:border-[#dc2626] focus:outline-hidden"
                 >
-                  <option value="compra" className="bg-[#141414] text-white">COMPRA / ENTRADA (+)</option>
-                  <option value="ajuste_manual" className="bg-[#141414] text-white">AJUSTE MANUAL / AUDITORÍA</option>
-                  <option value="devolucion_cliente" className="bg-[#141414] text-white">DEVOLUCIÓN DE CLIENTE (+)</option>
-                  <option value="daño_merma" className="bg-[#141414] text-white">DAÑO / MERMA (-)</option>
+                  <option value="purchase" className="bg-[#141414] text-white">COMPRA / ENTRADA (+)</option>
+                  <option value="adjustment" className="bg-[#141414] text-white">AJUSTE MANUAL / AUDITORÍA</option>
+                  <option value="refund" className="bg-[#141414] text-white">DEVOLUCIÓN DE CLIENTE (+)</option>
+                  <option value="damage" className="bg-[#141414] text-white">DAÑO / MERMA (-)</option>
+                  <option value="loss" className="bg-[#141414] text-white">PÉRDIDA (-)</option>
                 </select>
               </div>
 

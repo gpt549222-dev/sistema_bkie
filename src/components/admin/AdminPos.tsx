@@ -262,40 +262,7 @@ export const AdminPos: React.FC<AdminPosProps> = ({ businessSettings, onViewInvo
       const result = await processDirectPosSale(payload);
       playSuccessChime();
 
-      setCompletedInvoice({
-        id: result.invoice_id,
-        invoice_number: result.invoice_number,
-        order_id: result.order_id,
-        customer_id: null,
-        customer_address: null,
-        notes: null,
-        currency: 'XAF',
-        payment_status: 'paid',
-        paid_at: new Date().toISOString(),
-        cancelled_at: null,
-        customer_name: payload.customer_name,
-        customer_id_doc: payload.customer_id_doc || null,
-        customer_phone: payload.customer_phone || '',
-        payment_method: payload.payment_method,
-        subtotal: payload.subtotal,
-        discount: payload.discount,
-        tax: 0,
-        total: payload.total,
-        status: 'paid',
-        created_at: new Date().toISOString(),
-        items: payload.items.map((i, idx) => ({
-          id: `item-${idx}`,
-          invoice_id: result.invoice_id,
-          product_id: i.product_id,
-          product_name: i.product_name,
-          quantity: i.quantity,
-          original_unit_price: i.original_unit_price,
-          discount_amount: i.discount_amount,
-          unit_price: i.unit_price,
-          total: i.total_price,
-          created_at: new Date().toISOString(),
-        })),
-      });
+      setCompletedInvoice(result.invoice);
 
       clearCart();
       triggerGlobalRefresh();

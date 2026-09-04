@@ -221,10 +221,12 @@ export interface AppNotification {
 }
 
 export type InventoryMovementType =
-  | 'sale'
-  | 'refund'
+  | 'initial'
   | 'purchase'
+  | 'sale'
   | 'adjustment'
+  | 'refund'
+  | 'damage'
   | 'loss'
   | 'correction';
 
