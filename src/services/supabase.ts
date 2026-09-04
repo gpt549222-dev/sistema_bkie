@@ -104,27 +104,7 @@ function createSafeClient(url: string, key: string): SupabaseClient {
   return proxyClient as SupabaseClient;
 }
 
-export let supabase: SupabaseClient = createSafeClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-
-export function reconfigureSupabase(url: string, key: string) {
-  const cleanUrlValue = sanitizeUrl(url);
-  const cleanKeyValue = sanitizeString(key);
-
-  if (cleanUrlValue.startsWith('http') && cleanKeyValue.length > 20) {
-    supabase = createClient(cleanUrlValue, cleanKeyValue, {
-      auth: {
-        persistSession: true,
-        autoRefreshToken: true,
-        detectSessionInUrl: true,
-      },
-      realtime: {
-        params: {
-          eventsPerSecond: 10,
-        },
-      },
-    });
-  }
-}
+export const supabase: SupabaseClient = createSafeClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 export function isTableMissingError(error: any): boolean {
   if (!error) return false;

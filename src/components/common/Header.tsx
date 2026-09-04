@@ -6,16 +6,13 @@ import {
   Sparkles,
   Camera,
   Lock,
-  Database,
 } from 'lucide-react';
 import { useCart } from '../../context/CartContext';
-import { isConfigured } from '../../services/supabase';
 
 interface HeaderProps {
   onOpenTracker?: () => void;
   onOpenTracking?: () => void;
   onOpenAdmin: () => void;
-  onOpenConnection?: () => void;
   onOpenNotifications?: () => void;
   onOpenAiScanner?: () => void;
   searchQuery: string;
@@ -28,7 +25,6 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenTracker,
   onOpenTracking,
   onOpenAdmin,
-  onOpenConnection,
   onOpenAiScanner,
   searchQuery,
   setSearchQuery,
@@ -57,21 +53,6 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
 
           <div className="flex items-center gap-3 text-neutral-400 text-[11px]">
-            {onOpenConnection && (
-              <button
-                onClick={onOpenConnection}
-                id="btn-header-db-status"
-                className={`transition-colors flex items-center gap-1.5 font-bold uppercase tracking-widest text-[10px] cursor-pointer px-2 py-0.5 rounded ${
-                  isConfigured
-                    ? 'text-neutral-400 hover:text-white'
-                    : 'text-amber-400 hover:text-amber-300 bg-amber-950/60 border border-amber-500/40 animate-pulse'
-                }`}
-                title={isConfigured ? 'Estado de base de datos Supabase' : 'Supabase no configurado - Clic para configurar'}
-              >
-                <Database className="w-3 h-3" />
-                <span>{isConfigured ? 'Supabase' : 'Configurar DB'}</span>
-              </button>
-            )}
             <button
               onClick={handleOpenTracker}
               className="hover:text-white transition-colors flex items-center gap-1.5 font-bold uppercase tracking-widest text-[10px] cursor-pointer"

@@ -45,7 +45,6 @@ interface AdminLayoutProps {
   currentTab: AdminTab;
   setCurrentTab: (tab: AdminTab) => void;
   onExitAdmin: () => void;
-  onOpenConnection: () => void;
   children: React.ReactNode;
 }
 
@@ -53,7 +52,6 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
   currentTab,
   setCurrentTab,
   onExitAdmin,
-  onOpenConnection,
   children,
 }) => {
   const { user, logout } = useAuth();
@@ -73,7 +71,7 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
     { id: 'inventory', label: 'Kardex / Movimientos', icon: <Boxes className="w-4 h-4" /> },
     { id: 'sales', label: 'Ventas & Caja', icon: <TrendingUp className="w-4 h-4" /> },
     { id: 'notifications', label: 'Notificaciones', icon: <Bell className="w-4 h-4" />, badge: unreadCount },
-    { id: 'settings', label: 'Configuración & SQL', icon: <Settings className="w-4 h-4" /> },
+    { id: 'settings', label: 'Configuración & Empresa', icon: <Settings className="w-4 h-4" /> },
   ];
 
   const handleTestSound = () => {
@@ -112,10 +110,7 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
 
           {/* Realtime Status Indicator in Sidebar */}
           <div className="px-4 py-2.5 bg-[#050505] border-b border-white/10 flex items-center justify-between text-xs font-mono">
-            <button
-              onClick={onOpenConnection}
-              className="flex items-center gap-1.5 hover:text-white transition-colors cursor-pointer text-[10px] uppercase tracking-wider"
-            >
+            <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider select-none">
               <Radio className="w-3.5 h-3.5 text-[#ef4444]" />
               <span className="text-white/40">Sync:</span>
               <span
@@ -129,7 +124,7 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
               >
                 {status === 'connected' ? 'ONLINE' : status === 'reconnecting' ? 'SYNCING' : 'OFFLINE'}
               </span>
-            </button>
+            </div>
 
             <button
               onClick={handleTestSound}
@@ -200,14 +195,6 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
             >
               <LogOut className="w-3.5 h-3.5" />
               <span>CERRAR SESIÓN</span>
-            </button>
-
-            <button
-              onClick={onOpenConnection}
-              className="w-full py-2 px-3 bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 hover:text-white rounded-lg text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
-            >
-              <Database className="w-3 h-3 text-[#ef4444]" />
-              <span>CONFIGURAR BD SUPABASE</span>
             </button>
           </div>
         </div>

@@ -2,32 +2,24 @@ import React, { useState } from 'react';
 import { updateBusinessSettings } from '../../services/settingsService';
 import { BusinessSettings } from '../../types';
 import { useRealtime } from '../../context/RealtimeContext';
-import { BIKIE_MIGRATION_SQL } from '../../data/migrationSql';
 import {
   Building2,
   Phone,
   CreditCard,
-  Database,
-  Copy,
-  Check,
   Save,
-  Sparkles,
   MapPin,
   CheckCircle2,
 } from 'lucide-react';
 
 interface AdminSettingsProps {
   settings: BusinessSettings;
-  onOpenConnection: () => void;
 }
 
 export const AdminSettings: React.FC<AdminSettingsProps> = ({
   settings,
-  onOpenConnection,
 }) => {
   const [formData, setFormData] = useState<BusinessSettings>(settings);
   const [isSaving, setIsSaving] = useState(false);
-  const [copiedSql, setCopiedSql] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const { triggerGlobalRefresh } = useRealtime();
 
@@ -48,12 +40,6 @@ export const AdminSettings: React.FC<AdminSettingsProps> = ({
     }
   };
 
-  const handleCopySql = () => {
-    navigator.clipboard.writeText(BIKIE_MIGRATION_SQL);
-    setCopiedSql(true);
-    setTimeout(() => setCopiedSql(false), 2500);
-  };
-
   return (
     <div className="space-y-6 font-mono">
       {/* Header */}
@@ -63,17 +49,9 @@ export const AdminSettings: React.FC<AdminSettingsProps> = ({
             CONFIGURACIÓN DEL NEGOCIO
           </h1>
           <p className="text-[10px] text-white/40 uppercase tracking-widest mt-0.5">
-            DATOS FISCALES, CUENTAS DE COBRO, WHATSAPP Y ARQUITECTURA SUPABASE
+            DATOS FISCALES, CUENTAS DE COBRO Y ATENCIÓN POR WHATSAPP
           </p>
         </div>
-
-        <button
-          onClick={onOpenConnection}
-          className="px-4 py-2 bg-[#141414] hover:bg-white/10 border border-white/10 text-white text-xs font-black uppercase tracking-wider rounded-lg flex items-center gap-2 cursor-pointer transition-all"
-        >
-          <Database className="w-4 h-4 text-[#ef4444]" />
-          <span>GESTIÓN SUPABASE & TABLAS</span>
-        </button>
       </div>
 
       <form onSubmit={handleSave} className="space-y-6">
@@ -190,7 +168,7 @@ export const AdminSettings: React.FC<AdminSettingsProps> = ({
           {saveSuccess ? (
             <span className="text-xs font-black uppercase tracking-wider text-emerald-400 flex items-center gap-1">
               <CheckCircle2 className="w-4 h-4" />
-              ¡CONFIGURACIÓN GUARDADA EN SUPABASE!
+              ¡CONFIGURACIÓN GUARDADA EXITOSAMENTE!
             </span>
           ) : (
             <span></span>
