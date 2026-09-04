@@ -179,23 +179,11 @@ export async function updateOrderStatus(
   });
 
   if (rpcError) {
-    // Si la función atómica aún no ha sido migrada, realizar actualización segura con RLS admin
-    const { error: updateError } = await supabase
-      .from('orders')
-      .update({
-        status: newStatus,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', orderId);
-
-    if (updateError) {
-      throw new Error(`Error al actualizar estado del pedido: ${updateError.message}`);
-    }
-    return;
+    throw new Error(`Error al actualizar estado del pedido: ${rpcError.message}`);
   }
 
   if (!rpcData?.success) {
-    throw new Error('No se pudo actualizar el estado del pedido.');
+    throw new Error('No se pudo actualizar el estado del pedido en la base de datos.');
   }
 }
 

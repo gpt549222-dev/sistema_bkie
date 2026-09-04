@@ -62,55 +62,28 @@ export async function getInvoice(id: string): Promise<Invoice | null> {
 }
 
 export async function getInvoiceByOrderId(orderId: string): Promise<Invoice | null> {
-  // 1. Try secure RPC get_invoice_by_order
-  try {
-    const { data: rpcInvoice, error: rpcError } = await supabase.rpc('get_invoice_by_order', {
-      p_order_id: orderId,
-    });
+  // Consulta segura exclusiva mediante RPC get_invoice_by_order (sin fallbacks directos)
+  const { data: rpcInvoice, error: rpcError } = await supabase.rpc('get_invoice_by_order', {
+    p_order_id: orderId,
+  });
 
-    if (!rpcError && rpcInvoice && rpcInvoice.id) {
-      return {
-        ...rpcInvoice,
-        subtotal: Number(rpcInvoice.subtotal) || 0,
-        discount: Number(rpcInvoice.discount) || 0,
-        tax: Number(rpcInvoice.tax) || 0,
-        total: Number(rpcInvoice.total) || 0,
-        items: (rpcInvoice.items || []).map((it: any) => ({
-          ...it,
-          original_unit_price: Number(it.original_unit_price) || 0,
-          unit_price: Number(it.unit_price) || 0,
-          discount_amount: Number(it.discount_amount) || 0,
-          total: Number(it.total) || 0,
-        })),
-      };
-    }
-  } catch (err) {
-    console.warn('RPC get_invoice_by_order not available, trying direct query:', err);
+  if (rpcError) {
+    throw new Error(`Error al obtener factura del pedido: ${rpcError.message}`);
   }
 
-  // 2. Direct query fallback
-  const { data, error } = await supabase
-    .from('invoices')
-    .select('*, items:invoice_items(*)')
-    .eq('order_id', orderId)
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (error) {
-    throw new Error(`Error al obtener factura del pedido: ${error.message}`);
+  if (!rpcInvoice || !rpcInvoice.id) {
+    return null;
   }
-  if (!data) return null;
 
   return {
-    ...data,
-    subtotal: Number(data.subtotal) || 0,
-    discount: Number(data.discount) || 0,
-    tax: Number(data.tax) || 0,
-    total: Number(data.total) || 0,
-    items: (data.items || []).map((it: any) => ({
+    ...rpcInvoice,
+    subtotal: Number(rpcInvoice.subtotal) || 0,
+    discount: Number(rpcInvoice.discount) || 0,
+    tax: Number(rpcInvoice.tax) || 0,
+    total: Number(rpcInvoice.total) || 0,
+    items: (rpcInvoice.items || []).map((it: any) => ({
       ...it,
-      original_unit_price: Number(it.original_unit_price) || 0,
+      original_unit_price: Number(it.original_unit_price ?? it.unit_price) || 0,
       unit_price: Number(it.unit_price) || 0,
       discount_amount: Number(it.discount_amount) || 0,
       total: Number(it.total) || 0,

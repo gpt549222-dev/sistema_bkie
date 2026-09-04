@@ -78,55 +78,38 @@ export async function createProduct(productData: {
     throw new Error('El stock inicial no puede ser negativo.');
   }
 
-  const payload = {
-    code: (productData.code || '').trim().toUpperCase(),
-    name: (productData.name || '').trim(),
-    description: productData.description?.trim() || null,
-    price: Number(productData.price),
-    cost_price: Number(productData.cost_price || 0),
-    stock: Math.floor(Number(productData.stock)),
-    min_stock: Math.floor(Number(productData.min_stock ?? 5)),
-    category_id: productData.category_id || null,
-    image_url: productData.image_url || null,
-    is_active: productData.is_active ?? true,
-    is_featured: productData.is_featured ?? false,
-  };
+  // Creación atómica en PostgreSQL: inserta producto y registra movimiento inicial en una sola transacción
+  const { data: rpcProduct, error: rpcError } = await supabase.rpc('create_product_atomic', {
+    p_code: (productData.code || '').trim().toUpperCase(),
+    p_name: (productData.name || '').trim(),
+    p_description: productData.description?.trim() || null,
+    p_price: Number(productData.price),
+    p_cost_price: Number(productData.cost_price || 0),
+    p_stock: Math.floor(Number(productData.stock || 0)),
+    p_min_stock: Math.floor(Number(productData.min_stock ?? 5)),
+    p_category_id: productData.category_id || null,
+    p_image_url: productData.image_url?.trim() || null,
+    p_is_active: productData.is_active ?? true,
+    p_is_featured: productData.is_featured ?? false,
+  });
 
-  const { data, error } = await supabase
-    .from('products')
-    .insert(payload)
-    .select('*, category:categories(*)')
-    .single();
-
-  if (error) {
-    if (error.code === '23505') {
-      throw new Error(`Ya existe un producto con el código "${payload.code}".`);
+  if (rpcError) {
+    if (rpcError.code === '23505' || rpcError.message?.includes('Ya existe un producto')) {
+      throw new Error(`Ya existe un producto con el código "${productData.code.trim().toUpperCase()}".`);
     }
-    throw new Error(`Error al crear producto: ${error.message}`);
+    throw new Error(`Error al crear producto: ${rpcError.message}`);
   }
 
-  // If initial stock was provided, record an inventory movement
-  if (payload.stock > 0 && data?.id) {
-    try {
-      await supabase.from('inventory_movements').insert({
-        product_id: data.id,
-        type: 'purchase',
-        quantity: payload.stock,
-        previous_stock: 0,
-        new_stock: payload.stock,
-        note: 'Stock inicial al crear producto',
-      });
-    } catch (err) {
-      console.warn('Inventory movement note skipped:', err);
-    }
+  if (!rpcProduct || !rpcProduct.id) {
+    throw new Error('No se pudo confirmar la creación atómica del producto en la base de datos.');
   }
 
   return {
-    ...data,
-    price: Number(data.price) || 0,
-    cost_price: Number(data.cost_price) || 0,
-    stock: Number(data.stock) || 0,
-    min_stock: Number(data.min_stock) || 0,
+    ...rpcProduct,
+    price: Number(rpcProduct.price) || 0,
+    cost_price: Number(rpcProduct.cost_price) || 0,
+    stock: Number(rpcProduct.stock) || 0,
+    min_stock: Number(rpcProduct.min_stock) || 0,
   };
 }
 

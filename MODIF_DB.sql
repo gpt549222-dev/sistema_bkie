@@ -11,6 +11,7 @@
 --  4. Seguridad y protección de roles (evita escalado de privilegios y auto-asignación admin).
 --  5. Políticas estrictas de Row Level Security (RLS) para proteger datos privados.
 --  6. Funciones y Procedimientos Atómicos con bloqueo pesimista (FOR UPDATE):
+--     - create_product_atomic: Creación atómica de producto y stock inicial (ADMIN ONLY).
 --     - adjust_product_stock_atomic: Ajuste de stock sin race-conditions.
 --     - create_order_atomic: Pedido web atómico con descuento de inventario.
 --     - process_pos_sale_atomic: Venta mostrador en una sola transacción ACID.
@@ -705,6 +706,148 @@ BEGIN
         'paid_at', v_invoice.paid_at,
         'created_at', v_invoice.created_at,
         'items', v_items
+    );
+END;
+$$;
+
+-- 7.2.1 CREACIÓN ATÓMICA DE PRODUCTO Y REGISTRO DE STOCK INICIAL (ADMIN ONLY)
+CREATE OR REPLACE FUNCTION public.create_product_atomic(
+    p_code TEXT,
+    p_name TEXT,
+    p_description TEXT DEFAULT NULL,
+    p_price NUMERIC DEFAULT 0,
+    p_cost_price NUMERIC DEFAULT 0,
+    p_stock INT DEFAULT 0,
+    p_min_stock INT DEFAULT 5,
+    p_category_id UUID DEFAULT NULL,
+    p_image_url TEXT DEFAULT NULL,
+    p_is_active BOOLEAN DEFAULT true,
+    p_is_featured BOOLEAN DEFAULT false
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_clean_code TEXT;
+    v_clean_name TEXT;
+    v_product RECORD;
+    v_category RECORD;
+    v_movement_id UUID;
+BEGIN
+    -- 1. Verificar estrictamente que el usuario tenga rol de administrador
+    IF NOT public.is_admin() THEN
+        RAISE EXCEPTION 'Operación denegada: Solo administradores pueden crear productos.';
+    END IF;
+
+    -- 2. Validaciones de integridad
+    v_clean_code := UPPER(TRIM(p_code));
+    v_clean_name := TRIM(p_name);
+
+    IF v_clean_code IS NULL OR v_clean_code = '' THEN
+        RAISE EXCEPTION 'El código o SKU del producto es obligatorio.';
+    END IF;
+
+    IF v_clean_name IS NULL OR v_clean_name = '' THEN
+        RAISE EXCEPTION 'El nombre del producto es obligatorio.';
+    END IF;
+
+    IF p_price IS NULL OR p_price < 0 THEN
+        RAISE EXCEPTION 'El precio de venta no puede ser negativo.';
+    END IF;
+
+    IF p_cost_price IS NULL OR p_cost_price < 0 THEN
+        RAISE EXCEPTION 'El precio de costo no puede ser negativo.';
+    END IF;
+
+    IF p_stock IS NULL OR p_stock < 0 THEN
+        RAISE EXCEPTION 'El stock inicial no puede ser negativo.';
+    END IF;
+
+    IF p_min_stock IS NULL OR p_min_stock < 0 THEN
+        RAISE EXCEPTION 'El stock mínimo no puede ser negativo.';
+    END IF;
+
+    -- Verificar unicidad de SKU / código
+    IF EXISTS (SELECT 1 FROM public.products WHERE UPPER(TRIM(code)) = v_clean_code) THEN
+        RAISE EXCEPTION 'Ya existe un producto registrado con el código "%".', v_clean_code;
+    END IF;
+
+    -- Verificar categoría si fue provista
+    IF p_category_id IS NOT NULL THEN
+        SELECT * INTO v_category FROM public.categories WHERE id = p_category_id;
+        IF v_category IS NULL THEN
+            RAISE EXCEPTION 'La categoría especificada (ID: %) no existe.', p_category_id;
+        END IF;
+    END IF;
+
+    -- 3. Inserción atómica del producto en la tabla
+    INSERT INTO public.products (
+        code,
+        name,
+        description,
+        price,
+        cost_price,
+        stock,
+        min_stock,
+        category_id,
+        image_url,
+        is_active,
+        is_featured
+    ) VALUES (
+        v_clean_code,
+        v_clean_name,
+        NULLIF(TRIM(p_description), ''),
+        p_price,
+        p_cost_price,
+        p_stock,
+        p_min_stock,
+        p_category_id,
+        NULLIF(TRIM(p_image_url), ''),
+        COALESCE(p_is_active, true),
+        COALESCE(p_is_featured, false)
+    ) RETURNING * INTO v_product;
+
+    -- 4. Registrar movimiento de inventario inicial dentro de la misma transacción atómica
+    IF p_stock > 0 THEN
+        INSERT INTO public.inventory_movements (
+            product_id,
+            type,
+            quantity,
+            previous_stock,
+            new_stock,
+            note
+        ) VALUES (
+            v_product.id,
+            'initial',
+            p_stock,
+            0,
+            p_stock,
+            'Stock inicial registrado al crear producto'
+        ) RETURNING id INTO v_movement_id;
+    END IF;
+
+    -- 5. Devolver producto creado con relación de categoría completa
+    RETURN jsonb_build_object(
+        'id', v_product.id,
+        'code', v_product.code,
+        'name', v_product.name,
+        'description', v_product.description,
+        'price', v_product.price,
+        'cost_price', v_product.cost_price,
+        'stock', v_product.stock,
+        'min_stock', v_product.min_stock,
+        'category_id', v_product.category_id,
+        'image_url', v_product.image_url,
+        'is_active', v_product.is_active,
+        'is_featured', v_product.is_featured,
+        'created_at', v_product.created_at,
+        'updated_at', v_product.updated_at,
+        'category', (
+            SELECT row_to_json(c)
+            FROM public.categories c
+            WHERE c.id = v_product.category_id
+        )
     );
 END;
 $$;
@@ -1668,6 +1811,7 @@ $$;
 -- 7.11 PERMISOS EXPLÍCITOS PARA FUNCIONES SECURITY DEFINER
 -- ==============================================================================
 -- Revocar ejecución pública indiscriminada
+REVOKE ALL ON FUNCTION public.create_product_atomic(TEXT, TEXT, TEXT, NUMERIC, NUMERIC, INT, INT, UUID, TEXT, BOOLEAN, BOOLEAN) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.process_pos_sale_atomic(TEXT, TEXT, TEXT, TEXT, TEXT, NUMERIC, NUMERIC, NUMERIC, NUMERIC, TEXT, TEXT, TEXT, TEXT, JSONB) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.process_payment_and_invoice(UUID, TEXT, NUMERIC, TEXT, TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.adjust_product_stock_atomic(UUID, INT, TEXT, TEXT, TEXT) FROM PUBLIC;
@@ -1675,8 +1819,25 @@ REVOKE ALL ON FUNCTION public.cancel_order_with_stock_return(UUID, TEXT, TEXT) F
 REVOKE ALL ON FUNCTION public.cancel_order_atomic(UUID, TEXT, TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.cancel_invoice_atomic(UUID, TEXT, TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.update_order_status_atomic(UUID, TEXT, TEXT, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.create_order_atomic(TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, JSONB) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.track_order(TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.get_invoice_by_order(UUID) FROM PUBLIC;
+REVOKE ALL ON PROCEDURE public.promote_user_to_admin(TEXT) FROM PUBLIC;
+REVOKE ALL ON PROCEDURE public.promote_user_to_admin(TEXT) FROM anon, authenticated;
 
--- Otorgar ejecución de funciones administrativas a usuarios autenticados (con validación is_admin() interna)
+-- Revocar también explícitamente del rol 'anon' para funciones administrativas
+REVOKE ALL ON FUNCTION public.create_product_atomic(TEXT, TEXT, TEXT, NUMERIC, NUMERIC, INT, INT, UUID, TEXT, BOOLEAN, BOOLEAN) FROM anon;
+REVOKE ALL ON FUNCTION public.process_pos_sale_atomic(TEXT, TEXT, TEXT, TEXT, TEXT, NUMERIC, NUMERIC, NUMERIC, NUMERIC, TEXT, TEXT, TEXT, TEXT, JSONB) FROM anon;
+REVOKE ALL ON FUNCTION public.process_payment_and_invoice(UUID, TEXT, NUMERIC, TEXT, TEXT) FROM anon;
+REVOKE ALL ON FUNCTION public.adjust_product_stock_atomic(UUID, INT, TEXT, TEXT, TEXT) FROM anon;
+REVOKE ALL ON FUNCTION public.cancel_order_with_stock_return(UUID, TEXT, TEXT) FROM anon;
+REVOKE ALL ON FUNCTION public.cancel_order_atomic(UUID, TEXT, TEXT) FROM anon;
+REVOKE ALL ON FUNCTION public.cancel_invoice_atomic(UUID, TEXT, TEXT) FROM anon;
+REVOKE ALL ON FUNCTION public.update_order_status_atomic(UUID, TEXT, TEXT, TEXT) FROM anon;
+
+-- Otorgar ejecución de funciones administrativas exclusivamente a usuarios autenticados
+-- (Nota: cada función contiene validación interna estricta con is_admin())
+GRANT EXECUTE ON FUNCTION public.create_product_atomic(TEXT, TEXT, TEXT, NUMERIC, NUMERIC, INT, INT, UUID, TEXT, BOOLEAN, BOOLEAN) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.process_pos_sale_atomic(TEXT, TEXT, TEXT, TEXT, TEXT, NUMERIC, NUMERIC, NUMERIC, NUMERIC, TEXT, TEXT, TEXT, TEXT, JSONB) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.process_payment_and_invoice(UUID, TEXT, NUMERIC, TEXT, TEXT) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.adjust_product_stock_atomic(UUID, INT, TEXT, TEXT, TEXT) TO authenticated;
@@ -1685,7 +1846,10 @@ GRANT EXECUTE ON FUNCTION public.cancel_order_atomic(UUID, TEXT, TEXT) TO authen
 GRANT EXECUTE ON FUNCTION public.cancel_invoice_atomic(UUID, TEXT, TEXT) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.update_order_status_atomic(UUID, TEXT, TEXT, TEXT) TO authenticated;
 
--- Funciones públicas para storefront (crear pedidos y tracking)
+-- Otorgar procedimiento exclusivo de promoción administrativa solo a superusuario / backend
+GRANT EXECUTE ON PROCEDURE public.promote_user_to_admin(TEXT) TO postgres, service_role;
+
+-- Funciones públicas autorizadas para storefront (crear pedidos web y tracking)
 GRANT EXECUTE ON FUNCTION public.create_order_atomic(TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, JSONB) TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.track_order(TEXT) TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.get_invoice_by_order(UUID) TO anon, authenticated;
