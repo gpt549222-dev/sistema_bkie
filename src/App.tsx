@@ -27,6 +27,7 @@ import { AdminNotifications } from './components/admin/AdminNotifications';
 import { AdminSettings } from './components/admin/AdminSettings';
 import { FloatingCalculator } from './components/common/FloatingCalculator';
 import { AiListScannerModal } from './components/storefront/AiListScannerModal';
+import { MobileScanner } from './pages/MobileScanner';
 
 // Services & Context
 import { getProducts, getCategories } from './services/productService';
@@ -54,6 +55,27 @@ export function App() {
   // App Navigation View
   const [currentView, setCurrentView] = useState<'storefront' | 'admin'>('storefront');
   const [adminTab, setAdminTab] = useState<AdminTab>('dashboard');
+
+  // Check if user is navigating directly to mobile remote scanner
+  const [isScannerRoute, setIsScannerRoute] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      const path = window.location.pathname;
+      const search = window.location.search;
+      return path === '/scanner' || path.startsWith('/scanner') || search.includes('token=') || search.includes('mode=scanner');
+    }
+    return false;
+  });
+
+  useEffect(() => {
+    const checkRoute = () => {
+      const path = window.location.pathname;
+      const search = window.location.search;
+      setIsScannerRoute(path === '/scanner' || path.startsWith('/scanner') || search.includes('token=') || search.includes('mode=scanner'));
+    };
+
+    window.addEventListener('popstate', checkRoute);
+    return () => window.removeEventListener('popstate', checkRoute);
+  }, []);
 
   // Storefront Data State
   const [products, setProducts] = useState<Product[]>([]);
@@ -143,6 +165,11 @@ export function App() {
 
   // Active offers
   const activeOffers = offers.filter((o) => o.status === 'active');
+
+  // If directly in Mobile Scanner route
+  if (isScannerRoute) {
+    return <MobileScanner />;
+  }
 
   // If in Admin View
   if (currentView === 'admin') {

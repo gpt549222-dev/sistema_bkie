@@ -25,12 +25,20 @@ import {
   ArrowRight,
   Calculator,
   RotateCcw,
+  Smartphone,
 } from 'lucide-react';
-import { getProducts, getCategories } from '../../services/productService';
+import { getProducts, getCategories, getProductByCode } from '../../services/productService';
 import { getOffers } from '../../services/offerService';
 import { getAdditionalServices } from '../../services/serviceManager';
 import { processDirectPosSale } from '../../services/invoiceService';
+import { getCustomers } from '../../services/customerService';
 import { calculateProductPrice } from '../../services/pricingEngine';
+import { supabase } from '../../services/supabase';
+import {
+  createScannerSession,
+  disconnectScannerSession,
+  playScanSound,
+} from '../../services/scannerService';
 import {
   Product,
   Category,
@@ -39,10 +47,14 @@ import {
   Invoice,
   BusinessSettings,
   AdditionalService,
+  PosScannerSession,
+  ScannerScanAck,
+  Customer,
 } from '../../types';
 import { formatCurrency } from '../../utils/currency';
 import { useRealtime } from '../../context/RealtimeContext';
 import { playSuccessChime } from '../../utils/audio';
+import { MobileScannerModal } from './MobileScannerModal';
 
 interface AdminPosProps {
   businessSettings: BusinessSettings;
@@ -59,15 +71,18 @@ export const AdminPos: React.FC<AdminPosProps> = ({ businessSettings, onViewInvo
   const [categories, setCategories] = useState<Category[]>([]);
   const [offers, setOffers] = useState<Offer[]>([]);
   const [services, setServices] = useState<AdditionalService[]>([]);
+  const [customers, setCustomers] = useState<Customer[]>([]);
   const [activePosTab, setActivePosTab] = useState<'products' | 'services'>('products');
   const [mobileView, setMobileView] = useState<'catalog' | 'register'>('catalog');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [selectedServiceCategory, setSelectedServiceCategory] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [cart, setCart] = useState<PosCartItem[]>([]);
-  const [customerName, setCustomerName] = useState('Cliente Mostrador');
+  const [selectedCustomerId, setSelectedCustomerId] = useState<string>('');
+  const [customerName, setCustomerName] = useState('Consumidor final');
   const [customerIdDoc, setCustomerIdDoc] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
+  const [customerAddress, setCustomerAddress] = useState('');
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('efectivo');
   const [cashTendered, setCashTendered] = useState<string>('');
   const [cashierName, setCashierName] = useState('Caja 1 - Principal');
@@ -82,16 +97,18 @@ export const AdminPos: React.FC<AdminPosProps> = ({ businessSettings, onViewInvo
 
   const loadPosData = async () => {
     try {
-      const [p, c, o, s] = await Promise.all([
+      const [p, c, o, s, cust] = await Promise.all([
         getProducts(false),
         getCategories(),
         getOffers(),
         getAdditionalServices(false),
+        getCustomers(),
       ]);
       setProducts(p);
       setCategories(c);
       setOffers(o);
       setServices(s);
+      setCustomers(cust);
     } catch (err: any) {
       console.error('Error loading POS data:', err);
     }
@@ -176,13 +193,257 @@ export const AdminPos: React.FC<AdminPosProps> = ({ businessSettings, onViewInvo
     setCart((prev) => prev.filter((i) => i.product.id !== productId));
   };
 
+  const handleSelectCustomer = (id: string) => {
+    setSelectedCustomerId(id);
+    if (!id) {
+      setCustomerName('Consumidor final');
+      setCustomerIdDoc('');
+      setCustomerPhone('');
+      setCustomerAddress('');
+      return;
+    }
+    const found = customers.find((c) => c.id === id);
+    if (found) {
+      setCustomerName(found.full_name || 'Consumidor final');
+      setCustomerIdDoc(found.id_doc || found.identification_number || '');
+      setCustomerPhone(found.phone || '');
+      setCustomerAddress(found.address || '');
+    }
+  };
+
   const clearCart = () => {
     setCart([]);
-    setCustomerName('Cliente Mostrador');
+    setSelectedCustomerId('');
+    setCustomerName('Consumidor final');
     setCustomerIdDoc('');
     setCustomerPhone('');
+    setCustomerAddress('');
     setCashTendered('');
   };
+
+  // Remote Mobile Scanner State
+  const [isScannerModalOpen, setIsScannerModalOpen] = useState(false);
+  const [scannerSession, setScannerSession] = useState<PosScannerSession | null>(null);
+  const [isScannerConnected, setIsScannerConnected] = useState(false);
+  const [connectedDeviceName, setConnectedDeviceName] = useState<string | null>(null);
+  const [lastScannedItem, setLastScannedItem] = useState<{
+    barcode: string;
+    name?: string;
+    price?: number;
+    success: boolean;
+    time: string;
+  } | null>(null);
+  const scannerChannelRef = useRef<any>(null);
+
+  // Restore active session from localStorage if valid
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('bikie_pos_scanner_session');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed?.expires_at && new Date(parsed.expires_at).getTime() > Date.now()) {
+          setScannerSession(parsed);
+          if (parsed.status === 'connected') {
+            setIsScannerConnected(true);
+            setConnectedDeviceName(parsed.device_name || 'Dispositivo');
+          }
+        }
+      }
+    } catch {
+      // Ignore parse error
+    }
+  }, []);
+
+  const handleSessionUpdate = (session: PosScannerSession | null) => {
+    setScannerSession(session);
+    if (session) {
+      localStorage.setItem('bikie_pos_scanner_session', JSON.stringify(session));
+      setIsScannerConnected(session.status === 'connected');
+      setConnectedDeviceName(session.device_name || null);
+    } else {
+      localStorage.removeItem('bikie_pos_scanner_session');
+      setIsScannerConnected(false);
+      setConnectedDeviceName(null);
+    }
+  };
+
+  const handleDisconnectScanner = async () => {
+    if (scannerSession) {
+      try {
+        if (scannerChannelRef.current) {
+          scannerChannelRef.current.send({
+            type: 'broadcast',
+            event: 'session_closed',
+            payload: {},
+          });
+        }
+        await disconnectScannerSession({
+          sessionId: scannerSession.id,
+          token: scannerSession.session_token,
+        });
+      } catch (err) {
+        console.warn('Error disconnecting session:', err);
+      }
+    }
+    handleSessionUpdate(null);
+  };
+
+  const handleOpenScannerModal = async () => {
+    setIsScannerModalOpen(true);
+    if (
+      !scannerSession ||
+      (scannerSession.expires_at && new Date(scannerSession.expires_at).getTime() <= Date.now())
+    ) {
+      try {
+        const newSession = await createScannerSession('Caja Principal', 45);
+        handleSessionUpdate(newSession);
+      } catch (err) {
+        console.error('Error auto-creating scanner session:', err);
+      }
+    }
+  };
+
+  // Subscribe to remote mobile scanner realtime channel
+  useEffect(() => {
+    if (!scannerSession?.session_token) {
+      if (scannerChannelRef.current) {
+        supabase.removeChannel(scannerChannelRef.current);
+        scannerChannelRef.current = null;
+      }
+      return;
+    }
+
+    const channelName = `pos_scanner_${scannerSession.session_token}`;
+    const channel = supabase.channel(channelName, {
+      config: {
+        broadcast: { ack: true, self: false },
+      },
+    });
+
+    channel
+      .on('broadcast', { event: 'device_connected' }, ({ payload }) => {
+        setIsScannerConnected(true);
+        setConnectedDeviceName(payload?.device_name || 'Móvil vinculado');
+        playScanSound('connect');
+      })
+      .on('broadcast', { event: 'barcode_scanned' }, async ({ payload }) => {
+        const barcode = (payload?.barcode || '').trim();
+        if (!barcode) return;
+
+        // 1. Search in memory products
+        let product = products.find(
+          (p) =>
+            p.code.toLowerCase() === barcode.toLowerCase() ||
+            p.id.toLowerCase() === barcode.toLowerCase()
+        );
+
+        // 2. Search in DB if not in memory
+        if (!product) {
+          try {
+            product = (await getProductByCode(barcode)) || undefined;
+          } catch {
+            // Ignore
+          }
+        }
+
+        const nowTime = new Date().toLocaleTimeString('es-ES', {
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+        });
+
+        if (product) {
+          if (product.stock > 0) {
+            addToCart(product);
+            playScanSound('success');
+            setLastScannedItem({
+              barcode,
+              name: product.name,
+              price: product.price,
+              success: true,
+              time: nowTime,
+            });
+
+            // Send confirmation ack to mobile phone
+            channel.send({
+              type: 'broadcast',
+              event: 'scan_ack',
+              payload: {
+                success: true,
+                barcode,
+                name: product.name,
+                price: product.price,
+              },
+            });
+          } else {
+            playScanSound('error');
+            setLastScannedItem({
+              barcode,
+              name: `${product.name} (Sin Stock)`,
+              price: product.price,
+              success: false,
+              time: nowTime,
+            });
+
+            channel.send({
+              type: 'broadcast',
+              event: 'scan_ack',
+              payload: {
+                success: false,
+                barcode,
+                error: `Sin stock disponible para "${product.name}"`,
+              },
+            });
+          }
+        } else {
+          playScanSound('error');
+          setLastScannedItem({
+            barcode,
+            success: false,
+            time: nowTime,
+          });
+
+          channel.send({
+            type: 'broadcast',
+            event: 'scan_ack',
+            payload: {
+              success: false,
+              barcode,
+              error: 'Producto no encontrado en catálogo',
+            },
+          });
+        }
+      })
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'pos_scanner_sessions',
+          filter: `id=eq.${scannerSession.id}`,
+        },
+        (payload: any) => {
+          const updated = payload.new as PosScannerSession;
+          if (updated) {
+            if (updated.status === 'connected') {
+              setIsScannerConnected(true);
+              setConnectedDeviceName(updated.device_name || 'Dispositivo');
+            } else if (updated.status === 'disconnected') {
+              setIsScannerConnected(false);
+              setConnectedDeviceName(null);
+            }
+          }
+        }
+      )
+      .subscribe();
+
+    scannerChannelRef.current = channel;
+
+    return () => {
+      supabase.removeChannel(channel);
+      scannerChannelRef.current = null;
+    };
+  }, [scannerSession?.session_token, products]);
 
   // Fast Barcode / Enter-key handler
   const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -238,12 +499,23 @@ export const AdminPos: React.FC<AdminPosProps> = ({ businessSettings, onViewInvo
 
     setIsProcessing(true);
     try {
+      const activeCustomer = selectedCustomerId
+        ? customers.find((c) => c.id === selectedCustomerId)
+        : null;
+
+      const finalCustomerName = (
+        activeCustomer ? activeCustomer.full_name : customerName
+      ).trim() || 'Consumidor final';
+
       const payload = {
-        customer_name: customerName.trim() || 'Cliente Mostrador',
-        customer_id_doc: customerIdDoc.trim() || null,
-        customer_phone: customerPhone.trim() || null,
+        customer_id: activeCustomer ? activeCustomer.id : null,
+        customer_name: finalCustomerName,
+        customer_id_doc: (customerIdDoc.trim() || activeCustomer?.id_doc || activeCustomer?.identification_number || '') || null,
+        customer_phone: (customerPhone.trim() || activeCustomer?.phone || '') || null,
+        customer_address: (customerAddress.trim() || activeCustomer?.address || '') || null,
         payment_method: paymentMethod,
         cashier_name: cashierName.trim() || 'Caja 1',
+        client_request_id: crypto.randomUUID(),
         subtotal,
         discount,
         tax: 0,
@@ -380,6 +652,34 @@ export const AdminPos: React.FC<AdminPosProps> = ({ businessSettings, onViewInvo
                 className="w-full pl-10 pr-4 py-2.5 bg-[#141414] border border-white/10 rounded-lg text-xs text-white placeholder:text-white/30 focus:border-[#dc2626] focus:outline-none font-mono uppercase min-h-[42px]"
               />
             </div>
+
+            {/* Mobile Remote Scanner Button */}
+            <button
+              onClick={handleOpenScannerModal}
+              className={`px-3 py-2 rounded-lg border text-xs font-bold uppercase tracking-wider flex items-center gap-2 transition-all cursor-pointer min-h-[42px] shrink-0 ${
+                isScannerConnected
+                  ? 'bg-emerald-950/60 border-emerald-500/50 text-emerald-300 hover:bg-emerald-900/60 shadow-[0_0_15px_rgba(16,185,129,0.2)]'
+                  : scannerSession
+                  ? 'bg-amber-950/40 border-amber-500/40 text-amber-300 hover:bg-amber-900/50'
+                  : 'bg-[#141414] hover:bg-white/10 border-white/10 text-white/80 hover:text-white'
+              }`}
+              title="Vincular teléfono smartphone como lector de códigos de barra remoto"
+            >
+              <Smartphone className={`w-4 h-4 ${isScannerConnected ? 'text-emerald-400' : ''}`} />
+              <span className="hidden sm:inline">
+                {isScannerConnected ? 'Móvil Conectado' : 'Escanear con Móvil'}
+              </span>
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  isScannerConnected
+                    ? 'bg-emerald-400 animate-ping'
+                    : scannerSession
+                    ? 'bg-amber-400'
+                    : 'bg-white/20'
+                }`}
+              />
+            </button>
+
             <button
               onClick={loadPosData}
               className="px-3 bg-[#141414] hover:bg-white/10 border border-white/10 text-white rounded-lg transition-colors cursor-pointer flex items-center justify-center min-h-[42px]"
@@ -603,22 +903,57 @@ export const AdminPos: React.FC<AdminPosProps> = ({ businessSettings, onViewInvo
               )}
             </div>
 
-            {/* Customer Information inputs */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3 shrink-0">
-              <input
-                type="text"
-                value={customerName}
-                onChange={(e) => setCustomerName(e.target.value)}
-                placeholder="NOMBRE CLIENTE / EMPRESA"
-                className="px-3 py-2 bg-[#141414] border border-white/10 rounded-lg text-xs text-white placeholder:text-white/30 uppercase focus:border-[#dc2626] focus:outline-none min-h-[38px]"
-              />
-              <input
-                type="text"
-                value={customerIdDoc}
-                onChange={(e) => setCustomerIdDoc(e.target.value)}
-                placeholder="C.I. / NIF / RIF"
-                className="px-3 py-2 bg-[#141414] border border-white/10 rounded-lg text-xs text-white placeholder:text-white/30 uppercase font-mono focus:border-[#dc2626] focus:outline-none min-h-[38px]"
-              />
+            {/* Customer Selector & Information */}
+            <div className="space-y-2 mb-3 shrink-0">
+              <div className="flex items-center gap-1.5">
+                <div className="relative flex-1">
+                  <select
+                    value={selectedCustomerId}
+                    onChange={(e) => handleSelectCustomer(e.target.value)}
+                    className="w-full pl-8 pr-3 py-1.5 bg-[#141414] border border-white/10 rounded-lg text-xs text-white focus:border-[#dc2626] focus:outline-none min-h-[36px] cursor-pointer"
+                  >
+                    <option value="">👤 Consumidor final (Mostrador / General)</option>
+                    {customers.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.full_name} {c.id_doc ? `(${c.id_doc})` : c.phone ? `(${c.phone})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <User className="w-3.5 h-3.5 text-white/40 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                </div>
+                {selectedCustomerId && (
+                  <button
+                    type="button"
+                    onClick={() => handleSelectCustomer('')}
+                    className="px-2 py-1.5 text-[10px] font-bold uppercase text-white/60 hover:text-white bg-white/5 hover:bg-white/10 rounded-lg transition-colors shrink-0"
+                    title="Deseleccionar cliente"
+                  >
+                    Quitar
+                  </button>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <input
+                  type="text"
+                  value={customerName}
+                  onChange={(e) => {
+                    setCustomerName(e.target.value);
+                    if (selectedCustomerId) {
+                      setSelectedCustomerId('');
+                    }
+                  }}
+                  placeholder="NOMBRE CLIENTE / EMPRESA"
+                  className="px-3 py-2 bg-[#141414] border border-white/10 rounded-lg text-xs text-white placeholder:text-white/30 uppercase focus:border-[#dc2626] focus:outline-none min-h-[38px]"
+                />
+                <input
+                  type="text"
+                  value={customerIdDoc}
+                  onChange={(e) => setCustomerIdDoc(e.target.value)}
+                  placeholder="C.I. / NIF / RIF"
+                  className="px-3 py-2 bg-[#141414] border border-white/10 rounded-lg text-xs text-white placeholder:text-white/30 uppercase font-mono focus:border-[#dc2626] focus:outline-none min-h-[38px]"
+                />
+              </div>
             </div>
 
             {/* Cart Table List: Scrollable */}
@@ -855,6 +1190,18 @@ export const AdminPos: React.FC<AdminPosProps> = ({ businessSettings, onViewInvo
           </div>
         </div>
       )}
+
+      {/* Mobile Remote Scanner Connection Modal & Floating Card */}
+      <MobileScannerModal
+        isOpen={isScannerModalOpen}
+        onClose={() => setIsScannerModalOpen(false)}
+        session={scannerSession}
+        isConnected={isScannerConnected}
+        connectedDeviceName={connectedDeviceName}
+        onDisconnect={handleDisconnectScanner}
+        onSessionUpdate={handleSessionUpdate}
+        lastScannedItem={lastScannedItem}
+      />
     </div>
   );
 };

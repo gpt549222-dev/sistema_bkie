@@ -52,6 +52,47 @@ export async function getProduct(id: string): Promise<Product | null> {
   };
 }
 
+export async function getProductByCode(code: string): Promise<Product | null> {
+  const cleanCode = (code || '').trim();
+  if (!cleanCode) return null;
+
+  // 1. Search by exact code
+  let { data, error } = await supabase
+    .from('products')
+    .select('*, category:categories(*)')
+    .eq('is_active', true)
+    .ilike('code', cleanCode)
+    .maybeSingle();
+
+  // 2. If not found by code and string looks like UUID, search by ID
+  if (!data && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanCode)) {
+    const res = await supabase
+      .from('products')
+      .select('*, category:categories(*)')
+      .eq('is_active', true)
+      .eq('id', cleanCode)
+      .maybeSingle();
+    data = res.data;
+    error = res.error;
+  }
+
+  if (error) {
+    if (isTableMissingError(error)) return null;
+    console.warn('[productService] Error buscando producto por código:', error.message);
+    return null;
+  }
+
+  if (!data) return null;
+
+  return {
+    ...data,
+    price: Number(data.price) || 0,
+    cost_price: Number(data.cost_price) || 0,
+    stock: Number(data.stock) || 0,
+    min_stock: Number(data.min_stock) || 0,
+  };
+}
+
 export async function createProduct(productData: {
   code: string;
   name: string;

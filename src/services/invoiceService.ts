@@ -189,7 +189,8 @@ export async function deleteInvoice(invoiceId: string): Promise<boolean> {
 }
 
 export async function processDirectPosSale(payload: {
-  customer_name: string;
+  customer_name?: string;
+  customer_id?: string | null;
   customer_phone?: string;
   customer_id_doc?: string;
   customer_address?: string;
@@ -206,11 +207,13 @@ export async function processDirectPosSale(payload: {
   reference?: string | null;
   cashier_name?: string;
   notes?: string | null;
+  client_request_id?: string | null;
 }): Promise<{
   invoice_id: string;
   invoice_number: string;
   order_id: string;
   order_number: string;
+  sale_id?: string;
   invoice: Invoice;
 }> {
   if (!payload.items || payload.items.length === 0) {
@@ -226,7 +229,7 @@ export async function processDirectPosSale(payload: {
 
   // Ejecución atómica exclusiva con RPC en PostgreSQL (bloqueo FOR UPDATE de inventario, ACID sin fallbacks)
   const { data: rpcData, error: rpcError } = await supabase.rpc('process_pos_sale_atomic', {
-    p_customer_name: payload.customer_name?.trim() || 'Cliente Mostrador',
+    p_customer_name: payload.customer_name?.trim() || null,
     p_customer_phone: payload.customer_phone?.trim() || 'N/A',
     p_customer_id_doc: payload.customer_id_doc?.trim() || null,
     p_customer_address: payload.customer_address?.trim() || 'Mostrador POS BIKIE',
@@ -235,6 +238,8 @@ export async function processDirectPosSale(payload: {
     p_reference: payload.reference || null,
     p_cashier_name: payload.cashier_name || 'Admin BIKIE',
     p_notes: payload.notes || 'Venta directa en caja mostrador',
+    p_customer_id: payload.customer_id || null,
+    p_client_request_id: payload.client_request_id || null,
   });
 
   if (rpcError) {
@@ -255,6 +260,7 @@ export async function processDirectPosSale(payload: {
     invoice_number: rpcData.invoice_number,
     order_id: rpcData.order_id,
     order_number: rpcData.order_number,
+    sale_id: rpcData.sale_id,
     invoice: fullInvoice,
   };
 }

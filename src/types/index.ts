@@ -62,6 +62,7 @@ export interface Customer {
   phone: string;
   address: string | null;
   identification_number: string | null;
+  id_doc?: string | null;
   created_at: string;
 }
 
@@ -81,7 +82,7 @@ export type PaymentMethod =
   | 'punto_venta'
   | 'transferencia';
 
-export type PaymentStatus = 'pending' | 'confirmed' | 'rejected';
+export type PaymentStatus = 'pending' | 'confirmed' | 'partial' | 'paid' | 'rejected' | 'cancelled';
 
 export interface OrderItem {
   id: string;
@@ -101,6 +102,7 @@ export interface OrderStatusHistory {
   order_id: string;
   previous_status: OrderStatus | null;
   new_status: OrderStatus;
+  status?: OrderStatus | null;
   changed_by: string | null;
   note: string | null;
   created_at: string;
@@ -111,6 +113,7 @@ export interface Payment {
   order_id: string;
   amount: number;
   method: PaymentMethod;
+  payment_method?: PaymentMethod;
   status: PaymentStatus;
   reference: string | null;
   notes: string | null;
@@ -143,7 +146,7 @@ export interface Order {
   payments?: Payment[];
 }
 
-export type InvoiceStatus = 'issued' | 'paid' | 'cancelled';
+export type InvoiceStatus = 'draft' | 'issued' | 'paid' | 'partial' | 'cancelled';
 
 export interface InvoiceItem {
   id: string;
@@ -356,3 +359,41 @@ export interface AiScanMatchResult {
   items: AiScannedItem[];
   unmatched_items: string[];
 }
+
+export type PosScannerSessionStatus = 'waiting' | 'connected' | 'disconnected' | 'expired';
+
+export interface PosScannerSession {
+  id: string;
+  session_token: string;
+  short_code: string;
+  pos_identifier: string;
+  created_by?: string | null;
+  status: PosScannerSessionStatus;
+  device_id?: string | null;
+  device_name?: string | null;
+  created_at: string;
+  expires_at: string;
+  connected_at?: string | null;
+  disconnected_at?: string | null;
+  last_scanned_barcode?: string | null;
+  last_scanned_at?: string | null;
+}
+
+export interface ScannerScanEvent {
+  scanner_session_id: string;
+  session_token: string;
+  barcode: string;
+  quantity?: number;
+  timestamp: string;
+  device_id?: string;
+}
+
+export interface ScannerScanAck {
+  success: boolean;
+  barcode: string;
+  name?: string;
+  price?: number;
+  formatted_price?: string;
+  error?: string;
+}
+

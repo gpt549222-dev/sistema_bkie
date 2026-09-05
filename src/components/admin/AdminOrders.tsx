@@ -436,7 +436,7 @@ export const AdminOrders: React.FC<AdminOrdersProps> = ({
                   {selectedOrder.history.map((h) => (
                     <div key={h.id} className="flex items-center justify-between text-white/70">
                       <span>
-                        <strong className="text-white">{(h.new_status || '').toUpperCase()}</strong>: {h.note || 'Sin nota'}
+                        <strong className="text-white">{((h.new_status || h.status) || '').toUpperCase()}</strong>: {h.note || 'Sin nota'}
                       </span>
                       <span className="text-[10px] text-white/40">
                         {new Date(h.created_at).toLocaleTimeString()} ({h.changed_by})
