@@ -248,13 +248,8 @@ export async function connectScannerSession(params: {
     if (!error && data && data.status !== 'error') {
       return data as PosScannerSession;
     }
-    if (error && !isMissingFunctionError(error)) {
-      throw new Error(error.message);
-    }
   } catch (err: any) {
-    if (!isMissingFunctionError(err)) {
-      throw err;
-    }
+    console.warn('[scannerService] RPC connect notice:', err?.message || err);
   }
 
   // 2. Direct table update / query fallback

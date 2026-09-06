@@ -14,6 +14,7 @@ export interface Category {
 export interface Product {
   id: string;
   code: string;
+  barcode?: string | null;
   name: string;
   description: string | null;
   price: number;

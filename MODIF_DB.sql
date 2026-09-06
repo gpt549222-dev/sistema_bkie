@@ -700,7 +700,7 @@ BEGIN
     WHERE upper(trim(order_number)) = upper(trim(p_order_number))
     LIMIT 1;
 
-    IF v_order IS NULL THEN
+    IF NOT FOUND OR v_order.id IS NULL THEN
         RETURN NULL;
     END IF;
 
@@ -767,7 +767,7 @@ BEGIN
     ORDER BY created_at DESC
     LIMIT 1;
 
-    IF v_invoice IS NULL THEN
+    IF NOT FOUND OR v_invoice.id IS NULL THEN
         RETURN NULL;
     END IF;
 
@@ -875,7 +875,7 @@ BEGIN
     -- Verificar categoría si fue provista
     IF p_category_id IS NOT NULL THEN
         SELECT * INTO v_category FROM public.categories WHERE id = p_category_id;
-        IF v_category IS NULL THEN
+        IF NOT FOUND OR v_category.id IS NULL THEN
             RAISE EXCEPTION 'La categoría especificada (ID: %) no existe.', p_category_id;
         END IF;
     END IF;
@@ -980,7 +980,7 @@ BEGIN
     WHERE id = p_product_id
     FOR UPDATE;
 
-    IF v_product IS NULL THEN
+    IF NOT FOUND OR v_product.id IS NULL THEN
         RAISE EXCEPTION 'Producto no encontrado (ID: %)', p_product_id;
     END IF;
 
@@ -1100,12 +1100,14 @@ BEGIN
         END IF;
 
         -- Bloqueo pesimista del producto
+        v_product := NULL;
+        v_offer := NULL;
         SELECT * INTO v_product
         FROM public.products
         WHERE id = v_item.product_id
         FOR UPDATE;
 
-        IF v_product IS NULL THEN
+        IF NOT FOUND OR v_product.id IS NULL THEN
             RAISE EXCEPTION 'Producto con ID % no encontrado en el catálogo.', v_item.product_id;
         END IF;
 
@@ -1420,12 +1422,16 @@ BEGIN
         END IF;
 
         -- Bloqueo pesimista ordenado de la fila del producto
+        v_product := NULL;
+        v_service := NULL;
+        v_offer := NULL;
+
         SELECT * INTO v_product
         FROM public.products
         WHERE id = v_item.product_id
         FOR UPDATE;
 
-        IF v_product IS NOT NULL THEN
+        IF FOUND AND v_product.id IS NOT NULL THEN
             v_is_service := false;
 
             IF v_product.is_active IS FALSE THEN
@@ -1489,7 +1495,7 @@ BEGIN
             FROM public.services
             WHERE id = v_item.product_id;
 
-            IF v_service IS NULL THEN
+            IF NOT FOUND OR v_service.id IS NULL THEN
                 RAISE EXCEPTION 'Producto o servicio con ID % no encontrado en el catálogo.', v_item.product_id;
             END IF;
 
@@ -1683,7 +1689,7 @@ BEGIN
     WHERE id = p_order_id
     FOR UPDATE;
 
-    IF v_order IS NULL THEN
+    IF NOT FOUND OR v_order.id IS NULL THEN
         RAISE EXCEPTION 'Pedido con ID % no encontrado.', p_order_id;
     END IF;
 
@@ -1695,12 +1701,13 @@ BEGIN
     FOR v_item IN SELECT * FROM public.order_items WHERE order_id = p_order_id
     LOOP
         IF v_item.product_id IS NOT NULL THEN
+            v_product := NULL;
             SELECT * INTO v_product
             FROM public.products
             WHERE id = v_item.product_id
             FOR UPDATE;
 
-            IF v_product IS NOT NULL THEN
+            IF FOUND AND v_product.id IS NOT NULL THEN
                 UPDATE public.products
                 SET stock = stock + v_item.quantity, updated_at = now()
                 WHERE id = v_item.product_id;
@@ -1780,7 +1787,7 @@ BEGIN
     WHERE id = p_order_id
     FOR UPDATE;
 
-    IF v_order IS NULL THEN
+    IF NOT FOUND OR v_order.id IS NULL THEN
         RAISE EXCEPTION 'Pedido con ID % no encontrado.', p_order_id;
     END IF;
 
@@ -1936,7 +1943,7 @@ BEGIN
     WHERE id = p_order_id
     FOR UPDATE;
 
-    IF v_order IS NULL THEN
+    IF NOT FOUND OR v_order.id IS NULL THEN
         RAISE EXCEPTION 'Pedido con ID % no encontrado.', p_order_id;
     END IF;
 
@@ -1987,7 +1994,7 @@ BEGIN
     WHERE id = p_invoice_id
     FOR UPDATE;
 
-    IF v_invoice IS NULL THEN
+    IF NOT FOUND OR v_invoice.id IS NULL THEN
         RAISE EXCEPTION 'Factura con ID % no encontrada.', p_invoice_id;
     END IF;
 
@@ -2176,20 +2183,12 @@ BEGIN
         RAISE EXCEPTION 'Esta sesión de escáner fue finalizada desde el POS.';
     END IF;
 
-    -- Concurrencia: prevenir que dos móviles controlen el mismo POS al mismo tiempo
-    IF v_session.status = 'connected' AND v_session.device_id IS NOT NULL THEN
-        IF p_device_id IS NOT NULL AND v_session.device_id <> p_device_id THEN
-            RAISE EXCEPTION 'Este POS ya tiene un escáner conectado (%s). Desconéctalo desde el POS para vincular uno nuevo.',
-                COALESCE(v_session.device_name, 'otro dispositivo');
-        END IF;
-    END IF;
-
-    -- Actualizar conexión
+    -- Reconexión fluida del dispositivo móvil al POS sin bloqueos de autorización
     UPDATE public.pos_scanner_sessions
     SET status = 'connected',
         device_id = COALESCE(NULLIF(trim(p_device_id), ''), v_session.device_id, 'device-' || substr(md5(random()::text), 1, 8)),
         device_name = COALESCE(NULLIF(trim(p_device_name), ''), v_session.device_name, 'Dispositivo Móvil'),
-        connected_at = COALESCE(v_session.connected_at, v_now)
+        connected_at = v_now
     WHERE id = v_session.id
     RETURNING * INTO v_session;
 

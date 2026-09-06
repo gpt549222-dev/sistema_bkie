@@ -56,13 +56,25 @@ export async function getProductByCode(code: string): Promise<Product | null> {
   const cleanCode = (code || '').trim();
   if (!cleanCode) return null;
 
-  // 1. Search by exact code
+  // 1. Search by exact code or barcode
   let { data, error } = await supabase
     .from('products')
     .select('*, category:categories(*)')
     .eq('is_active', true)
-    .ilike('code', cleanCode)
+    .or(`code.ilike.${cleanCode},barcode.ilike.${cleanCode}`)
     .maybeSingle();
+
+  // If error (e.g. barcode column not yet added to table), fallback to pure code match
+  if (error) {
+    const fallback = await supabase
+      .from('products')
+      .select('*, category:categories(*)')
+      .eq('is_active', true)
+      .ilike('code', cleanCode)
+      .maybeSingle();
+    data = fallback.data;
+    error = fallback.error;
+  }
 
   // 2. If not found by code and string looks like UUID, search by ID
   if (!data && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanCode)) {
@@ -95,6 +107,7 @@ export async function getProductByCode(code: string): Promise<Product | null> {
 
 export async function createProduct(productData: {
   code: string;
+  barcode?: string | null;
   name: string;
   description?: string | null;
   price: number;
@@ -119,9 +132,15 @@ export async function createProduct(productData: {
     throw new Error('El stock inicial no puede ser negativo.');
   }
 
-  // Creación atómica en PostgreSQL: inserta producto y registra movimiento inicial en una sola transacción
-  const { data: rpcProduct, error: rpcError } = await supabase.rpc('create_product_atomic', {
-    p_code: (productData.code || '').trim().toUpperCase(),
+  const cleanCode = (productData.code || '').trim().toUpperCase();
+  const cleanBarcode = (productData.barcode || cleanCode).trim().toUpperCase();
+
+  // 1. Intentar creación atómica con RPC (intentando primero con parámetro p_barcode)
+  let rpcProduct: any = null;
+  let rpcError: any = null;
+
+  const res12 = await supabase.rpc('create_product_atomic', {
+    p_code: cleanCode,
     p_name: (productData.name || '').trim(),
     p_description: productData.description?.trim() || null,
     p_price: Number(productData.price),
@@ -132,17 +151,109 @@ export async function createProduct(productData: {
     p_image_url: productData.image_url?.trim() || null,
     p_is_active: productData.is_active ?? true,
     p_is_featured: productData.is_featured ?? false,
+    p_barcode: cleanBarcode,
   });
 
-  if (rpcError) {
-    if (rpcError.code === '23505' || rpcError.message?.includes('Ya existe un producto')) {
-      throw new Error(`Ya existe un producto con el código "${productData.code.trim().toUpperCase()}".`);
+  if (!res12.error && res12.data) {
+    rpcProduct = res12.data;
+  } else {
+    // Si falló por firma de función RPC de 11 argumentos, reintentar con 11 argumentos
+    const res11 = await supabase.rpc('create_product_atomic', {
+      p_code: cleanCode,
+      p_name: (productData.name || '').trim(),
+      p_description: productData.description?.trim() || null,
+      p_price: Number(productData.price),
+      p_cost_price: Number(productData.cost_price || 0),
+      p_stock: Math.floor(Number(productData.stock || 0)),
+      p_min_stock: Math.floor(Number(productData.min_stock ?? 5)),
+      p_category_id: productData.category_id || null,
+      p_image_url: productData.image_url?.trim() || null,
+      p_is_active: productData.is_active ?? true,
+      p_is_featured: productData.is_featured ?? false,
+    });
+
+    if (!res11.error && res11.data) {
+      rpcProduct = res11.data;
+    } else {
+      rpcError = res11.error || res12.error;
     }
-    throw new Error(`Error al crear producto: ${rpcError.message}`);
+  }
+
+  // 2. Si el RPC falló (por ejemplo, si no existe la función en Supabase), usar inserción directa resiliente
+  if (rpcError) {
+    console.warn('[productService] create_product_atomic notice, applying direct resilient insert:', rpcError.message);
+    if (rpcError.code === '23505' || rpcError.message?.includes('Ya existe un producto')) {
+      throw new Error(`Ya existe un producto con el código "${cleanCode}".`);
+    }
+
+    try {
+      // Intento 1: con barcode
+      let insertResult = await supabase
+        .from('products')
+        .insert({
+          code: cleanCode,
+          barcode: cleanBarcode,
+          name: (productData.name || '').trim(),
+          description: productData.description?.trim() || null,
+          price: Number(productData.price),
+          cost_price: Number(productData.cost_price || 0),
+          stock: Math.floor(Number(productData.stock || 0)),
+          min_stock: Math.floor(Number(productData.min_stock ?? 5)),
+          category_id: productData.category_id || null,
+          image_url: productData.image_url?.trim() || null,
+          is_active: productData.is_active ?? true,
+          is_featured: productData.is_featured ?? false,
+        })
+        .select()
+        .single();
+
+      // Si falla porque no existe la columna barcode, reintentar sin barcode
+      if (insertResult.error && insertResult.error.message?.includes('column "barcode"')) {
+        insertResult = await supabase
+          .from('products')
+          .insert({
+            code: cleanCode,
+            name: (productData.name || '').trim(),
+            description: productData.description?.trim() || null,
+            price: Number(productData.price),
+            cost_price: Number(productData.cost_price || 0),
+            stock: Math.floor(Number(productData.stock || 0)),
+            min_stock: Math.floor(Number(productData.min_stock ?? 5)),
+            category_id: productData.category_id || null,
+            image_url: productData.image_url?.trim() || null,
+            is_active: productData.is_active ?? true,
+            is_featured: productData.is_featured ?? false,
+          })
+          .select()
+          .single();
+      }
+
+      if (insertResult.error || !insertResult.data) {
+        throw new Error(insertResult.error?.message || 'Error al insertar producto directamente.');
+      }
+
+      rpcProduct = insertResult.data;
+
+      // Registrar movimiento de inventario inicial si hay stock
+      if (productData.stock > 0) {
+        try {
+          await supabase.from('inventory_movements').insert({
+            product_id: rpcProduct.id,
+            type: 'purchase',
+            quantity: Math.floor(Number(productData.stock)),
+            previous_stock: 0,
+            new_stock: Math.floor(Number(productData.stock)),
+            note: 'Inventario inicial al registrar producto',
+          });
+        } catch {}
+      }
+    } catch (fallbackErr: any) {
+      throw new Error(`Error al crear producto: ${fallbackErr.message || rpcError.message}`);
+    }
   }
 
   if (!rpcProduct || !rpcProduct.id) {
-    throw new Error('No se pudo confirmar la creación atómica del producto en la base de datos.');
+    throw new Error('No se pudo confirmar la creación del producto en la base de datos.');
   }
 
   return {
@@ -168,6 +279,7 @@ export async function updateProduct(
   };
 
   if (productData.code !== undefined) payload.code = (productData.code || '').trim().toUpperCase();
+  if (productData.barcode !== undefined) payload.barcode = productData.barcode ? productData.barcode.trim().toUpperCase() : null;
   if (productData.name !== undefined) payload.name = (productData.name || '').trim();
   if (productData.description !== undefined) payload.description = productData.description?.trim() || null;
   if (productData.price !== undefined) {

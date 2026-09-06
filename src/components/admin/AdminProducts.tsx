@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   getProducts,
   getCategories,
@@ -9,6 +9,14 @@ import {
 } from '../../services/productService';
 import { Product, Category, InventoryMovementType } from '../../types';
 import { formatCurrency } from '../../utils/currency';
+import {
+  generateProductBarcode,
+  generateCode128Barcode,
+  generateEan13Barcode,
+  renderBarcodeSvg,
+} from '../../utils/barcode';
+import { BarcodePrintModal } from './BarcodePrintModal';
+import { BatchBarcodeModal } from './BatchBarcodeModal';
 import { useRealtime } from '../../context/RealtimeContext';
 import {
   Package,
@@ -25,6 +33,9 @@ import {
   RefreshCw,
   Eye,
   EyeOff,
+  Barcode,
+  Printer,
+  Wand2,
 } from 'lucide-react';
 
 export const AdminProducts: React.FC = () => {
@@ -33,6 +44,12 @@ export const AdminProducts: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [isLoading, setIsLoading] = useState(true);
+
+  // Barcode Printing modals state
+  const [printingProduct, setPrintingProduct] = useState<Product | null>(null);
+  const [isBatchModalOpen, setIsBatchModalOpen] = useState(false);
+  const [openPrintAfterCreate, setOpenPrintAfterCreate] = useState(true);
+  const formBarcodeSvgRef = useRef<SVGSVGElement | null>(null);
 
   // Edit / Create Modal state
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -43,7 +60,7 @@ export const AdminProducts: React.FC = () => {
     description: '',
     category_id: '',
     price: 0,
-    cost: 0,
+    cost_price: 0,
     stock: 0,
     min_stock: 5,
     image_url: '',
@@ -63,6 +80,18 @@ export const AdminProducts: React.FC = () => {
     loadData();
   }, [refreshTrigger]);
 
+  // Actualizar vista previa del código de barras en vivo dentro del formulario
+  useEffect(() => {
+    if (isModalOpen && formBarcodeSvgRef.current && formData.code.trim()) {
+      renderBarcodeSvg(formBarcodeSvgRef.current, formData.code.trim(), {
+        width: 1.8,
+        height: 36,
+        displayValue: true,
+        fontSize: 10,
+      });
+    }
+  }, [isModalOpen, formData.code]);
+
   const loadData = async () => {
     setIsLoading(true);
     try {
@@ -78,8 +107,9 @@ export const AdminProducts: React.FC = () => {
 
   const handleOpenCreateModal = () => {
     setEditingProduct(null);
+    const autoBarcode = generateProductBarcode('EAN13');
     setFormData({
-      code: `BIK-${Math.floor(1000 + Math.random() * 9000)}`,
+      code: autoBarcode,
       name: '',
       description: '',
       category_id: categories[0]?.id || '',
@@ -90,6 +120,7 @@ export const AdminProducts: React.FC = () => {
       image_url: '',
       is_active: true,
     });
+    setOpenPrintAfterCreate(true);
     setIsModalOpen(true);
   };
 
@@ -107,19 +138,21 @@ export const AdminProducts: React.FC = () => {
       image_url: product.image_url || '',
       is_active: product.is_active,
     });
+    setOpenPrintAfterCreate(false);
     setIsModalOpen(true);
   };
 
   const handleSaveProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.name.trim()) return alert('El nombre es obligatorio');
-    if (!formData.code.trim()) return alert('El código SKU es obligatorio');
+    if (!formData.code.trim()) return alert('El código SKU o de barras es obligatorio');
 
     try {
       if (editingProduct) {
         // Actualizar datos descriptivos y fiscales
         await updateProduct(editingProduct.id, {
           code: formData.code.trim(),
+          barcode: formData.code.trim(),
           name: formData.name.trim(),
           description: formData.description.trim() || undefined,
           category_id: formData.category_id || undefined,
@@ -142,9 +175,12 @@ export const AdminProducts: React.FC = () => {
             'Administrador'
           );
         }
+        setIsModalOpen(false);
+        triggerGlobalRefresh();
       } else {
-        await createProduct({
+        const newProduct = await createProduct({
           code: formData.code.trim(),
+          barcode: formData.code.trim(),
           name: formData.name.trim(),
           description: formData.description.trim() || undefined,
           category_id: formData.category_id || undefined,
@@ -155,10 +191,15 @@ export const AdminProducts: React.FC = () => {
           image_url: formData.image_url.trim() || undefined,
           is_active: formData.is_active,
         });
-      }
 
-      setIsModalOpen(false);
-      triggerGlobalRefresh();
+        setIsModalOpen(false);
+        triggerGlobalRefresh();
+
+        // Si el usuario eligió imprimir etiquetas al crear, abrir modal directamente
+        if (openPrintAfterCreate && newProduct) {
+          setPrintingProduct(newProduct);
+        }
+      }
     } catch (err: any) {
       alert(`Error al guardar producto: ${err.message}`);
     }
@@ -224,6 +265,14 @@ export const AdminProducts: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2 font-mono">
+          <button
+            onClick={() => setIsBatchModalOpen(true)}
+            className="px-3.5 py-2.5 bg-[#141414] hover:bg-white/10 border border-white/10 text-white/90 hover:text-white text-xs font-bold uppercase tracking-wider rounded-lg flex items-center gap-1.5 transition-all cursor-pointer"
+            title="Imprimir etiquetas de códigos de barra en lote para múltiples productos"
+          >
+            <Printer className="w-4 h-4 text-rose-400" />
+            <span className="hidden sm:inline">IMPRIMIR EN LOTE</span>
+          </button>
           <button
             onClick={handleOpenCreateModal}
             className="px-4 py-2.5 bg-[#dc2626] hover:bg-[#ef4444] text-white text-xs font-black uppercase tracking-wider rounded-lg flex items-center gap-1.5 accent-glow shadow-md transition-all cursor-pointer"
@@ -332,8 +381,17 @@ export const AdminProducts: React.FC = () => {
                         </div>
                       </td>
 
-                      <td className="py-3 font-mono font-black text-[#ef4444]">
-                        {product.code}
+                      <td className="py-3 font-mono">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-black text-[#ef4444]">{product.code}</span>
+                          <button
+                            onClick={() => setPrintingProduct(product)}
+                            className="p-1 hover:bg-white/10 text-white/40 hover:text-rose-400 rounded transition cursor-pointer"
+                            title="Ver e imprimir etiqueta de código de barras"
+                          >
+                            <Barcode className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </td>
 
                       <td className="py-3 text-white/60 uppercase">
@@ -380,6 +438,13 @@ export const AdminProducts: React.FC = () => {
                       <td className="py-3 text-right">
                         <div className="flex items-center justify-end gap-1.5">
                           <button
+                            onClick={() => setPrintingProduct(product)}
+                            className="p-1.5 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 text-rose-400 hover:text-rose-300 rounded-lg cursor-pointer transition-colors"
+                            title="Imprimir etiquetas de código de barras"
+                          >
+                            <Printer className="w-3.5 h-3.5" />
+                          </button>
+                          <button
                             onClick={() => handleOpenEditModal(product)}
                             className="p-1.5 bg-[#141414] hover:bg-white/10 border border-white/10 text-white rounded-lg cursor-pointer transition-colors"
                             title="Editar producto"
@@ -420,16 +485,57 @@ export const AdminProducts: React.FC = () => {
             </h3>
 
             <form onSubmit={handleSaveProduct} className="space-y-4 text-xs">
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div>
-                  <label className="block font-black text-white/60 uppercase tracking-wider mb-1">CÓDIGO SKU *</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="font-black text-white/70 uppercase tracking-wider text-[10px] flex items-center gap-1">
+                      <Barcode className="w-3.5 h-3.5 text-rose-400" />
+                      <span>CÓDIGO DE BARRAS / SKU *</span>
+                    </label>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setFormData({ ...formData, code: generateProductBarcode('EAN13') })}
+                        className="px-1.5 py-0.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/20 rounded text-[9px] font-bold uppercase tracking-wider flex items-center gap-1 cursor-pointer"
+                        title="Generar código de barras numérico EAN-13 (13 dígitos, lectura óptima en POS)"
+                      >
+                        <Sparkles className="w-2.5 h-2.5" />
+                        <span>EAN-13</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFormData({ ...formData, code: generateCode128Barcode('alphanumeric') })}
+                        className="px-1.5 py-0.5 bg-white/5 hover:bg-white/10 text-white/70 border border-white/10 rounded text-[9px] font-bold uppercase tracking-wider flex items-center gap-1 cursor-pointer"
+                        title="Generar código de tienda BIK-..."
+                      >
+                        <RefreshCw className="w-2.5 h-2.5" />
+                        <span>BIK-xxx</span>
+                      </button>
+                    </div>
+                  </div>
                   <input
                     type="text"
                     required
                     value={formData.code}
-                    onChange={(e) => setFormData({ ...formData, code: e.target.value })}
-                    className="w-full p-2.5 bg-[#141414] border border-white/10 rounded-lg text-white uppercase focus:border-[#dc2626] focus:outline-hidden"
+                    onChange={(e) => setFormData({ ...formData, code: e.target.value.toUpperCase() })}
+                    placeholder="Escanea con pistola o escribe..."
+                    className="w-full p-2.5 bg-[#141414] border border-white/10 rounded-lg text-white font-mono uppercase focus:border-[#dc2626] focus:outline-hidden"
                   />
+
+                  {/* Vista previa en vivo del código de barras renderizado */}
+                  {formData.code.trim() && (
+                    <div className="mt-1.5 p-2 bg-white rounded-lg flex items-center justify-between gap-2 shadow-xs">
+                      <div className="flex items-center overflow-hidden">
+                        <svg ref={formBarcodeSvgRef} className="h-8 max-w-[170px]"></svg>
+                      </div>
+                      <div className="text-right flex flex-col justify-center pr-1">
+                        <span className="text-[9px] font-mono font-black text-neutral-900">{formData.code}</span>
+                        <span className="text-[8px] font-black text-emerald-700 uppercase tracking-tight flex items-center gap-0.5 justify-end">
+                          <CheckCircle2 className="w-2.5 h-2.5" /> ESCANEABLE POS
+                        </span>
+                      </div>
+                    </div>
+                  )}
                 </div>
                 <div>
                   <label className="block font-black text-white/60 uppercase tracking-wider mb-1">CATEGORÍA</label>
@@ -535,6 +641,21 @@ export const AdminProducts: React.FC = () => {
                   MOSTRAR PRODUCTO ACTIVO EN EL CATÁLOGO
                 </label>
               </div>
+
+              {!editingProduct && (
+                <label className="flex items-center gap-2.5 p-2.5 bg-rose-500/10 border border-rose-500/20 rounded-lg cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={openPrintAfterCreate}
+                    onChange={(e) => setOpenPrintAfterCreate(e.target.checked)}
+                    className="accent-rose-500 rounded"
+                  />
+                  <span className="text-white/90 text-xs font-bold uppercase tracking-tight flex items-center gap-1.5">
+                    <Printer className="w-3.5 h-3.5 text-rose-400" />
+                    Abrir diseñador para imprimir etiquetas tras guardar
+                  </span>
+                </label>
+              )}
 
               <div className="flex justify-end gap-2 pt-4 border-t border-white/10">
                 <button
@@ -642,6 +763,22 @@ export const AdminProducts: React.FC = () => {
             </form>
           </div>
         </div>
+      )}
+
+      {/* Modal de Impresión Individual de Código de Barras y Etiquetas */}
+      {printingProduct && (
+        <BarcodePrintModal
+          product={printingProduct}
+          onClose={() => setPrintingProduct(null)}
+        />
+      )}
+
+      {/* Modal de Impresión en Lote de Códigos de Barras */}
+      {isBatchModalOpen && (
+        <BatchBarcodeModal
+          products={products}
+          onClose={() => setIsBatchModalOpen(false)}
+        />
       )}
     </div>
   );

@@ -330,11 +330,16 @@ export const AdminPos: React.FC<AdminPosProps> = ({ businessSettings, onViewInvo
         const barcode = (payload?.barcode || '').trim();
         if (!barcode) return;
 
-        // 1. Search in memory products
+        // 1. Search in memory products (exact or stripped leading zeroes)
+        const cleanBc = barcode.toLowerCase();
+        const trimmedBc = cleanBc.replace(/^0+/, '');
         let product = products.find(
           (p) =>
-            p.code.toLowerCase() === barcode.toLowerCase() ||
-            p.id.toLowerCase() === barcode.toLowerCase()
+            p.code.toLowerCase() === cleanBc ||
+            (p.barcode && p.barcode.toLowerCase() === cleanBc) ||
+            p.id.toLowerCase() === cleanBc ||
+            (trimmedBc && p.code.toLowerCase().replace(/^0+/, '') === trimmedBc) ||
+            (trimmedBc && p.barcode && p.barcode.toLowerCase().replace(/^0+/, '') === trimmedBc)
         );
 
         // 2. Search in DB if not in memory
@@ -345,6 +350,13 @@ export const AdminPos: React.FC<AdminPosProps> = ({ businessSettings, onViewInvo
             // Ignore
           }
         }
+
+        // 3. Search in additional services
+        const service = !product ? services.find(
+          (s) =>
+            s.code.toLowerCase() === cleanBc ||
+            s.id.toLowerCase() === cleanBc
+        ) : undefined;
 
         const nowTime = new Date().toLocaleTimeString('es-ES', {
           hour: '2-digit',
@@ -395,6 +407,27 @@ export const AdminPos: React.FC<AdminPosProps> = ({ businessSettings, onViewInvo
               },
             });
           }
+        } else if (service) {
+          addServiceToCart(service);
+          playScanSound('success');
+          setLastScannedItem({
+            barcode,
+            name: service.name,
+            price: service.price,
+            success: true,
+            time: nowTime,
+          });
+
+          channel.send({
+            type: 'broadcast',
+            event: 'scan_ack',
+            payload: {
+              success: true,
+              barcode,
+              name: service.name,
+              price: service.price,
+            },
+          });
         } else {
           playScanSound('error');
           setLastScannedItem({
@@ -450,7 +483,10 @@ export const AdminPos: React.FC<AdminPosProps> = ({ businessSettings, onViewInvo
     if (e.key === 'Enter' && searchQuery.trim()) {
       const query = searchQuery.trim().toLowerCase();
       const exactMatch = products.find(
-        (p) => p.code.toLowerCase() === query || p.id.toLowerCase() === query
+        (p) =>
+          p.code.toLowerCase() === query ||
+          (p.barcode && p.barcode.toLowerCase() === query) ||
+          p.id.toLowerCase() === query
       );
       if (exactMatch) {
         addToCart(exactMatch);
@@ -551,6 +587,7 @@ export const AdminPos: React.FC<AdminPosProps> = ({ businessSettings, onViewInvo
     const matchesSearch =
       p.name.toLowerCase().includes(q) ||
       p.code.toLowerCase().includes(q) ||
+      (p.barcode && p.barcode.toLowerCase().includes(q)) ||
       (p.description && p.description.toLowerCase().includes(q));
     return matchesCat && matchesSearch;
   });
