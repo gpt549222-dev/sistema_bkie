@@ -24,12 +24,42 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
   const [password, setPassword] = useState('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [failedAttempts, setFailedAttempts] = useState<number>(() => {
+    return Number(sessionStorage.getItem('bikie_login_failed_attempts') || '0');
+  });
+  const [lockoutRemaining, setLockoutRemaining] = useState<number>(() => {
+    const lockedUntil = Number(sessionStorage.getItem('bikie_login_locked_until') || '0');
+    const diff = Math.ceil((lockedUntil - Date.now()) / 1000);
+    return diff > 0 ? diff : 0;
+  });
   const { login, logout } = useAuth();
+
+  // Timer countdown for lockout
+  React.useEffect(() => {
+    if (lockoutRemaining <= 0) return;
+    const interval = setInterval(() => {
+      setLockoutRemaining((prev) => {
+        if (prev <= 1) {
+          sessionStorage.removeItem('bikie_login_locked_until');
+          sessionStorage.removeItem('bikie_login_failed_attempts');
+          setFailedAttempts(0);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [lockoutRemaining]);
 
   if (!isOpen) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (lockoutRemaining > 0) {
+      setErrorMessage(`Acceso temporalmente bloqueado por seguridad. Inténtalo de nuevo en ${lockoutRemaining} segundos.`);
+      return;
+    }
+
     setErrorMessage(null);
     setIsLoading(true);
 
@@ -37,13 +67,29 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
       const role = await login(email.trim(), password);
       if (role !== 'admin') {
         await logout();
-        setErrorMessage('Acceso denegado: Esta cuenta no tiene rol de administrador en Supabase.');
-        return;
+        throw new Error('Acceso denegado: Esta cuenta no tiene rol de administrador en Supabase.');
       }
+      // Reset failed attempts on success
+      sessionStorage.removeItem('bikie_login_failed_attempts');
+      sessionStorage.removeItem('bikie_login_locked_until');
+      setFailedAttempts(0);
       onSuccess();
       onClose();
     } catch (err: any) {
-      setErrorMessage(err.message || 'Credenciales inválidas en Supabase Auth.');
+      const newAttempts = failedAttempts + 1;
+      setFailedAttempts(newAttempts);
+      sessionStorage.setItem('bikie_login_failed_attempts', String(newAttempts));
+
+      if (newAttempts >= 5) {
+        const lockSeconds = 180; // 3 minutos
+        const lockedUntil = Date.now() + lockSeconds * 1000;
+        sessionStorage.setItem('bikie_login_locked_until', String(lockedUntil));
+        setLockoutRemaining(lockSeconds);
+        setErrorMessage(`Demasiados intentos fallidos (5). Por seguridad, el acceso ha sido bloqueado durante 3 minutos.`);
+      } else {
+        const remainingAttempts = 5 - newAttempts;
+        setErrorMessage(`${err.message || 'Credenciales inválidas en Supabase Auth.'} (Intentos restantes: ${remainingAttempts})`);
+      }
     } finally {
       setIsLoading(false);
     }
@@ -112,11 +158,17 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
 
           <button
             type="submit"
-            disabled={isLoading}
-            className="w-full py-3.5 bg-[#dc2626] hover:bg-[#ef4444] text-white font-black uppercase tracking-[0.2em] rounded-lg text-xs flex items-center justify-center gap-2 accent-glow shadow-md cursor-pointer transition-all disabled:opacity-50 mt-2"
+            disabled={isLoading || lockoutRemaining > 0}
+            className="w-full py-3.5 bg-[#dc2626] hover:bg-[#ef4444] text-white font-black uppercase tracking-[0.2em] rounded-lg text-xs flex items-center justify-center gap-2 accent-glow shadow-md cursor-pointer transition-all disabled:opacity-50 disabled:cursor-not-allowed mt-2"
           >
             <ShieldCheck className="w-4 h-4" />
-            <span>{isLoading ? 'AUTENTICANDO...' : 'INICIAR SESIÓN'}</span>
+            <span>
+              {lockoutRemaining > 0
+                ? `BLOQUEADO (${lockoutRemaining}s)`
+                : isLoading
+                ? 'AUTENTICANDO...'
+                : 'INICIAR SESIÓN'}
+            </span>
           </button>
         </form>
 

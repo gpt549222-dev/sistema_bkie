@@ -7,6 +7,7 @@ import {
 } from '../../services/productService';
 import { Category } from '../../types';
 import { useRealtime } from '../../context/RealtimeContext';
+import { ConfirmModal } from '../common/ConfirmModal';
 import {
   Plus,
   Edit2,
@@ -21,6 +22,8 @@ export const AdminCategories: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
+  const [categoryToDelete, setCategoryToDelete] = useState<Category | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
     slug: '',
@@ -102,14 +105,21 @@ export const AdminCategories: React.FC = () => {
     }
   };
 
-  const handleDelete = async (category: Category) => {
-    if (confirm(`¿Eliminar la categoría "${category.name}"?`)) {
-      try {
-        await deleteCategory(category.id);
-        triggerGlobalRefresh();
-      } catch (err: any) {
-        alert(`Error al eliminar: ${err.message}`);
-      }
+  const handleDelete = (category: Category) => {
+    setCategoryToDelete(category);
+  };
+
+  const executeDeleteCategory = async () => {
+    if (!categoryToDelete) return;
+    setIsDeleting(true);
+    try {
+      await deleteCategory(categoryToDelete.id);
+      triggerGlobalRefresh();
+      setCategoryToDelete(null);
+    } catch (err: any) {
+      alert(`Error al eliminar categoría: ${err.message}`);
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -274,6 +284,19 @@ export const AdminCategories: React.FC = () => {
           </div>
         </div>
       )}
+      {/* Modal de Confirmación de Borrado */}
+      <ConfirmModal
+        isOpen={Boolean(categoryToDelete)}
+        onClose={() => setCategoryToDelete(null)}
+        onConfirm={executeDeleteCategory}
+        title="¿Eliminar esta categoría?"
+        message={`Estás a punto de eliminar la categoría "${categoryToDelete?.name}". Los artículos que pertenezcan a esta categoría quedarán sin categoría asignada.`}
+        warningNote="Esta acción puede ser irreversible."
+        confirmLabel="Eliminar Categoría"
+        cancelLabel="Cancelar"
+        isDestructive={true}
+        isLoading={isDeleting}
+      />
     </div>
   );
 };

@@ -379,6 +379,62 @@ CREATE TABLE IF NOT EXISTS public.pos_scanner_sessions (
     last_scanned_at TIMESTAMPTZ
 );
 
+-- 3.21 PURCHASES (Compras y Entrada de Mercancía a Proveedores)
+CREATE TABLE IF NOT EXISTS public.purchases (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    purchase_number TEXT NOT NULL UNIQUE,
+    supplier_id UUID REFERENCES public.suppliers(id) ON DELETE SET NULL,
+    supplier_name TEXT NOT NULL,
+    total_amount NUMERIC(14,2) NOT NULL DEFAULT 0 CHECK (total_amount >= 0),
+    status TEXT NOT NULL DEFAULT 'received' CHECK (status IN ('draft', 'ordered', 'received', 'cancelled')),
+    notes TEXT,
+    created_by TEXT NOT NULL DEFAULT 'Admin BIKIE',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
+);
+
+-- 3.22 PURCHASE_ITEMS (Detalle de Productos Comprados)
+CREATE TABLE IF NOT EXISTS public.purchase_items (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    purchase_id UUID NOT NULL REFERENCES public.purchases(id) ON DELETE CASCADE,
+    product_id UUID REFERENCES public.products(id) ON DELETE SET NULL,
+    product_name TEXT NOT NULL,
+    quantity INTEGER NOT NULL CHECK (quantity > 0),
+    cost_price NUMERIC(14,2) NOT NULL DEFAULT 0 CHECK (cost_price >= 0),
+    subtotal NUMERIC(14,2) NOT NULL DEFAULT 0 CHECK (subtotal >= 0),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
+);
+
+-- 3.23 CASH_REGISTERS (Control de Turnos de Caja y Arqueo)
+CREATE TABLE IF NOT EXISTS public.cash_registers (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name TEXT NOT NULL DEFAULT 'Caja Principal',
+    status TEXT NOT NULL DEFAULT 'closed' CHECK (status IN ('open', 'closed')),
+    opened_at TIMESTAMPTZ,
+    closed_at TIMESTAMPTZ,
+    opened_by TEXT,
+    closed_by TEXT,
+    initial_amount NUMERIC(14,2) NOT NULL DEFAULT 0 CHECK (initial_amount >= 0),
+    final_amount NUMERIC(14,2),
+    total_sales NUMERIC(14,2) DEFAULT 0,
+    expected_amount NUMERIC(14,2) DEFAULT 0,
+    difference NUMERIC(14,2) DEFAULT 0,
+    notes TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
+);
+
+-- 3.24 CASH_MOVEMENTS (Entradas y Salidas de Efectivo en Caja)
+CREATE TABLE IF NOT EXISTS public.cash_movements (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    cash_register_id UUID REFERENCES public.cash_registers(id) ON DELETE CASCADE,
+    type TEXT NOT NULL CHECK (type IN ('deposit', 'withdrawal')),
+    amount NUMERIC(14,2) NOT NULL CHECK (amount > 0),
+    description TEXT NOT NULL,
+    created_by TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
+);
+
 -- ==============================================================================
 -- 4. ÍNDICES DE RENDIMIENTO
 -- ==============================================================================
@@ -403,6 +459,10 @@ CREATE INDEX IF NOT EXISTS idx_pos_scanner_token ON public.pos_scanner_sessions(
 CREATE INDEX IF NOT EXISTS idx_pos_scanner_short_code ON public.pos_scanner_sessions(short_code);
 CREATE INDEX IF NOT EXISTS idx_pos_scanner_status ON public.pos_scanner_sessions(status);
 CREATE INDEX IF NOT EXISTS idx_pos_scanner_expires_at ON public.pos_scanner_sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_purchases_supplier_id ON public.purchases(supplier_id);
+CREATE INDEX IF NOT EXISTS idx_purchase_items_purchase_id ON public.purchase_items(purchase_id);
+CREATE INDEX IF NOT EXISTS idx_cash_registers_status ON public.cash_registers(status);
+CREATE INDEX IF NOT EXISTS idx_cash_movements_shift ON public.cash_movements(cash_register_id);
 
 -- ==============================================================================
 -- 5. AUTENTICACIÓN, ROLES Y PROTECCIÓN CONTRA ESCALADO DE PRIVILEGIOS
@@ -513,6 +573,10 @@ ALTER TABLE public.services ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.suppliers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.pos_scanner_sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.purchases ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.purchase_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.cash_registers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.cash_movements ENABLE ROW LEVEL SECURITY;
 
 -- Limpieza de políticas previas
 DROP POLICY IF EXISTS "Public read profiles" ON public.profiles;
@@ -676,6 +740,24 @@ DROP POLICY IF EXISTS "Admin full access to pos scanner sessions" ON public.pos_
 DROP POLICY IF EXISTS "Public access to pos scanner sessions" ON public.pos_scanner_sessions;
 CREATE POLICY "Public access to pos scanner sessions" ON public.pos_scanner_sessions 
     FOR ALL USING (true) WITH CHECK (true);
+
+-- Compras a proveedores (Solo administradores)
+DROP POLICY IF EXISTS "Admin full access to purchases" ON public.purchases;
+CREATE POLICY "Admin full access to purchases" ON public.purchases 
+    FOR ALL USING (public.is_admin()) WITH CHECK (public.is_admin());
+
+DROP POLICY IF EXISTS "Admin full access to purchase_items" ON public.purchase_items;
+CREATE POLICY "Admin full access to purchase_items" ON public.purchase_items 
+    FOR ALL USING (public.is_admin()) WITH CHECK (public.is_admin());
+
+-- Turnos y Arqueo de Caja (Personal autenticado: admin y cajeros)
+DROP POLICY IF EXISTS "Staff full access to cash_registers" ON public.cash_registers;
+CREATE POLICY "Staff full access to cash_registers" ON public.cash_registers 
+    FOR ALL USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
+
+DROP POLICY IF EXISTS "Staff full access to cash_movements" ON public.cash_movements;
+CREATE POLICY "Staff full access to cash_movements" ON public.cash_movements 
+    FOR ALL USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
 
 -- ==============================================================================
 -- 7. PROCEDIMIENTOS Y FUNCIONES ATÓMICAS (CONCURRENCY SAFE CON FOR UPDATE)
@@ -2470,6 +2552,15 @@ BEGIN
         END IF;
         IF NOT EXISTS (SELECT 1 FROM pg_publication_tables WHERE pubname = 'supabase_realtime' AND tablename = 'sales') THEN
             ALTER PUBLICATION supabase_realtime ADD TABLE public.sales;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_publication_tables WHERE pubname = 'supabase_realtime' AND tablename = 'purchases') THEN
+            ALTER PUBLICATION supabase_realtime ADD TABLE public.purchases;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_publication_tables WHERE pubname = 'supabase_realtime' AND tablename = 'cash_registers') THEN
+            ALTER PUBLICATION supabase_realtime ADD TABLE public.cash_registers;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_publication_tables WHERE pubname = 'supabase_realtime' AND tablename = 'cash_movements') THEN
+            ALTER PUBLICATION supabase_realtime ADD TABLE public.cash_movements;
         END IF;
     END IF;
 END $$;

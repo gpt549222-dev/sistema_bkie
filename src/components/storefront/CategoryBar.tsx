@@ -35,18 +35,18 @@ export const CategoryBar: React.FC<CategoryBarProps> = ({
         </span>
       </div>
 
-      <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-none">
+      <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-none touch-pan-x -mx-4 px-4 sm:mx-0 sm:px-0">
         {/* All categories pill */}
         <button
           onClick={() => onSelectCategory(null)}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-xs text-[11px] font-black uppercase tracking-[0.15em] whitespace-nowrap transition-all cursor-pointer border ${
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-[11px] font-black uppercase tracking-[0.15em] whitespace-nowrap transition-all cursor-pointer border shrink-0 ${
             selectedCategoryId === null
               ? 'bg-white text-black border-white shadow-lg'
               : 'bg-[#121212] text-white/60 hover:text-white border-white/10 hover:border-white/30'
           }`}
         >
           <Layers className="w-3.5 h-3.5" />
-          <span>TODOS LOS PRODUCTOS</span>
+          <span>TODOS</span>
         </button>
 
         {/* Dynamic Category list from Supabase */}
@@ -58,7 +58,7 @@ export const CategoryBar: React.FC<CategoryBarProps> = ({
             <button
               key={cat.id}
               onClick={() => onSelectCategory(cat.id)}
-              className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-[11px] font-black uppercase tracking-[0.15em] whitespace-nowrap transition-all cursor-pointer border ${
+              className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-[11px] font-black uppercase tracking-[0.15em] whitespace-nowrap transition-all cursor-pointer border shrink-0 ${
                 isSelected
                   ? 'bg-[#dc2626] text-white border-[#dc2626] shadow-md accent-glow'
                   : 'bg-[#121212] text-white/60 hover:text-white border-white/10 hover:border-white/30'

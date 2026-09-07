@@ -398,3 +398,29 @@ export interface ScannerScanAck {
   error?: string;
 }
 
+export interface PurchaseItem {
+  id: string;
+  purchase_id: string;
+  product_id: string;
+  product_name?: string;
+  quantity: number;
+  cost_price: number;
+  total_cost: number;
+  created_at?: string;
+}
+
+export interface Purchase {
+  id: string;
+  purchase_number: string;
+  supplier_id: string | null;
+  supplier_name?: string;
+  supplier?: Supplier | null;
+  total_amount: number;
+  status: 'received' | 'pending' | 'cancelled';
+  notes?: string | null;
+  created_by?: string | null;
+  created_at: string;
+  received_at?: string | null;
+  items?: PurchaseItem[];
+}
+

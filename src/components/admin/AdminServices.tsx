@@ -19,6 +19,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { AdditionalService, ServiceCategory } from '../../types';
+import { ConfirmModal } from '../common/ConfirmModal';
 import {
   getAdditionalServices,
   createAdditionalService,
@@ -40,6 +41,7 @@ export const AdminServices: React.FC<AdminServicesProps> = ({ onSelectServiceFor
   // Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingService, setEditingService] = useState<AdditionalService | null>(null);
+  const [serviceToDelete, setServiceToDelete] = useState<AdditionalService | null>(null);
 
   // Form Fields
   const [formCode, setFormCode] = useState('');
@@ -148,14 +150,18 @@ export const AdminServices: React.FC<AdminServicesProps> = ({ onSelectServiceFor
     }
   };
 
-  const handleDelete = async (srv: AdditionalService) => {
-    if (confirm(`¿Estás seguro de eliminar el servicio "${srv.name}"?`)) {
-      try {
-        await deleteAdditionalService(srv.id);
-        setServices((prev) => prev.filter((s) => s.id !== srv.id));
-      } catch (err: any) {
-        alert(`Error al eliminar: ${err.message}`);
-      }
+  const handleDelete = (srv: AdditionalService) => {
+    setServiceToDelete(srv);
+  };
+
+  const handleConfirmDeleteService = async () => {
+    if (!serviceToDelete) return;
+    try {
+      await deleteAdditionalService(serviceToDelete.id);
+      setServices((prev) => prev.filter((s) => s.id !== serviceToDelete.id));
+      setServiceToDelete(null);
+    } catch (err: any) {
+      alert(`Error al eliminar: ${err.message}`);
     }
   };
 
@@ -505,6 +511,18 @@ export const AdminServices: React.FC<AdminServicesProps> = ({ onSelectServiceFor
           </div>
         </div>
       )}
+
+      {/* Modal de confirmación para eliminar servicio */}
+      <ConfirmModal
+        isOpen={Boolean(serviceToDelete)}
+        onClose={() => setServiceToDelete(null)}
+        onConfirm={handleConfirmDeleteService}
+        title="Eliminar Servicio"
+        message={`¿Estás seguro de que deseas eliminar permanentemente el servicio "${serviceToDelete?.name}"? Dejará de estar disponible en el POS.`}
+        warningNote="Esta acción es irreversible y eliminará el servicio del catálogo."
+        requireKeyword="ELIMINAR"
+        confirmLabel="Eliminar Servicio"
+      />
     </div>
   );
 };

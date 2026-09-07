@@ -3,11 +3,14 @@ import {
   getOrders,
   updateOrderStatus,
   cancelOrder,
+  deleteOrder,
+  clearOrders,
 } from '../../services/orderService';
 import { processPaymentAndIssueInvoice } from '../../services/invoiceService';
 import { Order, OrderStatus, PaymentMethod, Invoice, BusinessSettings } from '../../types';
 import { formatCurrency } from '../../utils/currency';
 import { useRealtime } from '../../context/RealtimeContext';
+import { ConfirmModal } from '../common/ConfirmModal';
 import {
   Search,
   Filter,
@@ -24,6 +27,7 @@ import {
   FileText,
   CreditCard,
   X,
+  Trash2,
 } from 'lucide-react';
 
 interface AdminOrdersProps {
@@ -87,6 +91,49 @@ export const AdminOrders: React.FC<AdminOrdersProps> = ({
   const [cancelModalOrder, setCancelModalOrder] = useState<Order | null>(null);
   const [cancelReason, setCancelReason] = useState('Cancelado por solicitud del cliente');
   const [isCancelling, setIsCancelling] = useState(false);
+
+  // Limpiar pedidos modal state
+  const [isClearModalOpen, setIsClearModalOpen] = useState(false);
+  const [isConfirmClearModalOpen, setIsConfirmClearModalOpen] = useState(false);
+  const [clearMode, setClearMode] = useState<'cancelled' | 'delivered' | 'all'>('cancelled');
+  const [isClearingOrders, setIsClearingOrders] = useState(false);
+  const [orderToDelete, setOrderToDelete] = useState<Order | null>(null);
+
+  const handleExecuteClearOrders = async () => {
+    setIsClearingOrders(true);
+    try {
+      const count = await clearOrders(clearMode);
+      alert(`Se han limpiado ${count} pedido(s) con éxito.`);
+      setIsConfirmClearModalOpen(false);
+      setIsClearModalOpen(false);
+      triggerGlobalRefresh();
+      loadOrders();
+    } catch (err: any) {
+      alert(`Error al limpiar pedidos: ${err.message}`);
+    } finally {
+      setIsClearingOrders(false);
+    }
+  };
+
+  const handleDeleteSingleOrder = (order: Order) => {
+    setOrderToDelete(order);
+  };
+
+  const handleExecuteDeleteSingleOrder = async () => {
+    if (!orderToDelete) return;
+    try {
+      await deleteOrder(orderToDelete.id);
+      alert(`Pedido #${orderToDelete.order_number} eliminado.`);
+      if (selectedOrder?.id === orderToDelete.id) {
+        setSelectedOrder(null);
+      }
+      setOrderToDelete(null);
+      triggerGlobalRefresh();
+      loadOrders();
+    } catch (err: any) {
+      alert(`Error al eliminar pedido: ${err.message}`);
+    }
+  };
 
   const handleConfirmCancel = async () => {
     if (!cancelModalOrder) return;
@@ -171,14 +218,25 @@ export const AdminOrders: React.FC<AdminOrdersProps> = ({
           </p>
         </div>
 
-        <button
-          onClick={loadOrders}
-          disabled={isLoading}
-          className="px-4 py-2.5 bg-[#141414] hover:bg-white/10 border border-white/10 text-white rounded-xs text-xs font-black uppercase tracking-wider flex items-center gap-1.5 cursor-pointer transition-colors font-mono"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin text-[#ff3e00]' : ''}`} />
-          <span>ACTUALIZAR</span>
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setIsClearModalOpen(true)}
+            className="px-4 py-2.5 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-[#ef4444] hover:text-red-300 rounded-lg text-xs font-black uppercase tracking-wider flex items-center gap-1.5 cursor-pointer transition-colors font-mono"
+            title="Limpiar pedidos del sistema"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            <span>LIMPIAR PEDIDOS</span>
+          </button>
+
+          <button
+            onClick={loadOrders}
+            disabled={isLoading}
+            className="px-4 py-2.5 bg-[#141414] hover:bg-white/10 border border-white/10 text-white rounded-lg text-xs font-black uppercase tracking-wider flex items-center gap-1.5 cursor-pointer transition-colors font-mono"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin text-[#ff3e00]' : ''}`} />
+            <span>ACTUALIZAR</span>
+          </button>
+        </div>
       </div>
 
       {/* Filter Tabs */}
@@ -342,10 +400,18 @@ export const AdminOrders: React.FC<AdminOrdersProps> = ({
 
                         <button
                           onClick={() => setSelectedOrder(order)}
-                          className="p-1.5 bg-white/10 hover:bg-white/20 border border-white/20 text-white rounded-lg text-[10px] font-bold cursor-pointer"
+                          className="p-1.5 bg-white/10 hover:bg-white/20 border border-white/20 text-white rounded-lg text-[10px] font-bold cursor-pointer transition-colors"
                           title="Ver detalles"
                         >
                           <Eye className="w-3.5 h-3.5" />
+                        </button>
+
+                        <button
+                          onClick={() => handleDeleteSingleOrder(order)}
+                          className="p-1.5 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-[#ef4444] hover:text-red-300 rounded-lg text-[10px] font-bold cursor-pointer transition-colors"
+                          title="Eliminar pedido definitivamente"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </div>
                     </td>
@@ -658,6 +724,149 @@ export const AdminOrders: React.FC<AdminOrdersProps> = ({
           </div>
         </div>
       )}
+
+      {/* Modal Limpiar Pedidos */}
+      {isClearModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xs">
+          <div className="bg-[#0d0d0d] rounded-xl max-w-md w-full p-6 border border-white/10 shadow-2xl relative text-white animate-in fade-in zoom-in-95 font-mono">
+            <button
+              onClick={() => setIsClearModalOpen(false)}
+              className="absolute top-4 right-4 text-white/40 hover:text-white"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-lg bg-red-500/20 border border-red-500/30 flex items-center justify-center text-[#ef4444]">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-display font-black text-lg text-white uppercase tracking-tight">
+                  LIMPIAR PEDIDOS
+                </h3>
+                <p className="text-[10px] text-white/40 uppercase">
+                  Mantenimiento y depuración de la base de datos
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-3 mb-6 text-xs">
+              <p className="text-white/70">
+                Selecciona qué grupo de pedidos deseas purgar del sistema:
+              </p>
+
+              <label className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
+                clearMode === 'cancelled'
+                  ? 'bg-red-500/15 border-red-500/40 text-white'
+                  : 'bg-[#141414] border-white/10 text-white/60 hover:text-white'
+              }`}>
+                <input
+                  type="radio"
+                  name="clear_mode"
+                  checked={clearMode === 'cancelled'}
+                  onChange={() => setClearMode('cancelled')}
+                  className="mt-0.5 accent-[#dc2626]"
+                />
+                <div>
+                  <p className="font-bold uppercase text-[11px] text-[#ef4444]">
+                    Solo pedidos cancelados (Recomendado)
+                  </p>
+                  <p className="text-[10px] text-white/40 mt-0.5">
+                    Elimina pedidos cancelados que no generaron facturación activa.
+                  </p>
+                </div>
+              </label>
+
+              <label className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
+                clearMode === 'delivered'
+                  ? 'bg-red-500/15 border-red-500/40 text-white'
+                  : 'bg-[#141414] border-white/10 text-white/60 hover:text-white'
+              }`}>
+                <input
+                  type="radio"
+                  name="clear_mode"
+                  checked={clearMode === 'delivered'}
+                  onChange={() => setClearMode('delivered')}
+                  className="mt-0.5 accent-[#dc2626]"
+                />
+                <div>
+                  <p className="font-bold uppercase text-[11px] text-amber-400">
+                    Solo pedidos entregados / archivados
+                  </p>
+                  <p className="text-[10px] text-white/40 mt-0.5">
+                    Limpia el histórico de pedidos ya entregados a los clientes.
+                  </p>
+                </div>
+              </label>
+
+              <label className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
+                clearMode === 'all'
+                  ? 'bg-red-500/25 border-red-500/60 text-white'
+                  : 'bg-[#141414] border-white/10 text-white/60 hover:text-white'
+              }`}>
+                <input
+                  type="radio"
+                  name="clear_mode"
+                  checked={clearMode === 'all'}
+                  onChange={() => setClearMode('all')}
+                  className="mt-0.5 accent-[#dc2626]"
+                />
+                <div>
+                  <p className="font-bold uppercase text-[11px] text-red-400">
+                    Todos los pedidos (Limpieza general)
+                  </p>
+                  <p className="text-[10px] text-white/40 mt-0.5">
+                    Elimina todos los pedidos registrados (ideal para reiniciar tras pruebas).
+                  </p>
+                </div>
+              </label>
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setIsClearModalOpen(false)}
+                className="flex-1 py-2.5 bg-white/10 hover:bg-white/20 text-white text-xs font-black uppercase tracking-wider rounded-lg transition-colors cursor-pointer"
+              >
+                CANCELAR
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsConfirmClearModalOpen(true)}
+                disabled={isClearingOrders}
+                className="flex-1 py-2.5 bg-[#dc2626] hover:bg-[#ef4444] text-white text-xs font-black uppercase tracking-wider rounded-lg transition-colors cursor-pointer disabled:opacity-50 accent-glow"
+              >
+                CONFIRMAR LIMPIEZA
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ConfirmModal para eliminar un pedido individual */}
+      <ConfirmModal
+        isOpen={Boolean(orderToDelete)}
+        onClose={() => setOrderToDelete(null)}
+        onConfirm={handleExecuteDeleteSingleOrder}
+        title="Eliminar Pedido"
+        message={`¿Estás seguro de que deseas eliminar permanentemente el pedido #${orderToDelete?.order_number}? Todos sus registros asociados serán eliminados.`}
+        warningNote="Esta acción es irreversible y purgará los ítems y pagos del pedido."
+        requireKeyword="ELIMINAR"
+        confirmLabel="Eliminar Pedido"
+      />
+
+      {/* ConfirmModal para limpieza masiva de pedidos */}
+      <ConfirmModal
+        isOpen={isConfirmClearModalOpen}
+        onClose={() => setIsConfirmClearModalOpen(false)}
+        onConfirm={handleExecuteClearOrders}
+        title="Limpieza Masiva de Pedidos"
+        message={`¿Estás completamente seguro de purgar todos los pedidos en estado "${clearMode === 'cancelled' ? 'CANCELADOS' : clearMode === 'delivered' ? 'ENTREGADOS' : 'TODOS'}"?`}
+        warningNote="Esta operación eliminará múltiples pedidos de la base de datos de manera definitiva."
+        requireKeyword="ELIMINAR"
+        confirmLabel="Purgar Pedidos"
+        isLoading={isClearingOrders}
+      />
     </div>
   );
 };

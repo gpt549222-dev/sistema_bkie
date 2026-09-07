@@ -9,6 +9,7 @@ import {
 } from '../../services/notificationService';
 import { AppNotification } from '../../types';
 import { useRealtime } from '../../context/RealtimeContext';
+import { ConfirmModal } from '../common/ConfirmModal';
 import {
   Bell,
   CheckCircle2,
@@ -26,6 +27,7 @@ export const AdminNotifications: React.FC = () => {
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [filterType, setFilterType] = useState<string>('all');
   const [isLoading, setIsLoading] = useState(true);
+  const [isClearAllModalOpen, setIsClearAllModalOpen] = useState(false);
   const { refreshTrigger, triggerGlobalRefresh } = useRealtime();
 
   useEffect(() => {
@@ -73,11 +75,15 @@ export const AdminNotifications: React.FC = () => {
     }
   };
 
-  const handleClearAll = async () => {
-    if (!confirm('¿Estás seguro de que deseas eliminar TODAS las notificaciones?')) return;
+  const handleClearAll = () => {
+    setIsClearAllModalOpen(true);
+  };
+
+  const handleExecuteClearAll = async () => {
     try {
       await deleteAllNotifications();
       setNotifications([]);
+      setIsClearAllModalOpen(false);
       triggerGlobalRefresh();
     } catch (err: any) {
       alert(`Error al limpiar notificaciones: ${err.message}`);
@@ -230,6 +236,18 @@ export const AdminNotifications: React.FC = () => {
           ))
         )}
       </div>
+
+      {/* ConfirmModal para vaciar todas las notificaciones */}
+      <ConfirmModal
+        isOpen={isClearAllModalOpen}
+        onClose={() => setIsClearAllModalOpen(false)}
+        onConfirm={handleExecuteClearAll}
+        title="Eliminar Todas las Notificaciones"
+        message="¿Estás completamente seguro de que deseas eliminar todas las notificaciones del historial?"
+        warningNote="Esta acción es irreversible y vaciará la bandeja de notificaciones."
+        requireKeyword="ELIMINAR"
+        confirmLabel="Vaciar Notificaciones"
+      />
     </div>
   );
 };

@@ -1,9 +1,16 @@
 import React, { useState, useEffect } from 'react';
-import { getInvoices, cancelInvoice, getSales } from '../../services/invoiceService';
+import {
+  getInvoices,
+  cancelInvoice,
+  deleteInvoice,
+  clearInvoices,
+  getSales,
+} from '../../services/invoiceService';
 import { Invoice, BusinessSettings, Sale } from '../../types';
 import { useRealtime } from '../../context/RealtimeContext';
 import { formatCurrency } from '../../utils/currency';
 import { downloadInvoicePDF, downloadMonthlySalesReportPDF } from '../../utils/pdfGenerator';
+import { ConfirmModal } from '../common/ConfirmModal';
 import {
   Search,
   Eye,
@@ -11,6 +18,10 @@ import {
   Download,
   FileSpreadsheet,
   Calendar,
+  Trash2,
+  XCircle,
+  AlertTriangle,
+  X,
 } from 'lucide-react';
 
 interface AdminInvoicesProps {
@@ -31,6 +42,11 @@ export const AdminInvoices: React.FC<AdminInvoicesProps> = ({
   );
   const [isLoading, setIsLoading] = useState(true);
   const [isExporting, setIsExporting] = useState(false);
+  const [isClearInvoicesModalOpen, setIsClearInvoicesModalOpen] = useState(false);
+  const [clearInvoicesMode, setClearInvoicesMode] = useState<'cancelled' | 'all'>('cancelled');
+  const [isClearingInvoices, setIsClearingInvoices] = useState(false);
+  const [invoiceToDelete, setInvoiceToDelete] = useState<Invoice | null>(null);
+  const [isConfirmingClear, setIsConfirmingClear] = useState(false);
   const { refreshTrigger, triggerGlobalRefresh } = useRealtime();
 
   useEffect(() => {
@@ -82,6 +98,42 @@ export const AdminInvoices: React.FC<AdminInvoicesProps> = ({
       triggerGlobalRefresh();
     } catch (err: any) {
       alert(`Error al anular factura: ${err.message}`);
+    }
+  };
+
+  const handleDeleteInvoice = (invoice: Invoice) => {
+    setInvoiceToDelete(invoice);
+  };
+
+  const executeDeleteInvoice = async () => {
+    if (!invoiceToDelete) return;
+    try {
+      await deleteInvoice(invoiceToDelete.id);
+      triggerGlobalRefresh();
+      loadData();
+      setInvoiceToDelete(null);
+    } catch (err: any) {
+      alert(`Error al borrar factura: ${err.message}`);
+    }
+  };
+
+  const handleClearInvoicesClick = () => {
+    setIsConfirmingClear(true);
+  };
+
+  const executeClearInvoices = async () => {
+    setIsClearingInvoices(true);
+    try {
+      const count = await clearInvoices(clearInvoicesMode);
+      alert(`Se han borrado ${count} factura(s) del sistema.`);
+      setIsClearInvoicesModalOpen(false);
+      setIsConfirmingClear(false);
+      triggerGlobalRefresh();
+      loadData();
+    } catch (err: any) {
+      alert(`Error al depurar facturas: ${err.message}`);
+    } finally {
+      setIsClearingInvoices(false);
     }
   };
 
@@ -138,6 +190,15 @@ export const AdminInvoices: React.FC<AdminInvoicesProps> = ({
           >
             <Download className="w-3.5 h-3.5" />
             <span>EXPORTAR REPORTE MENSUAL (PDF)</span>
+          </button>
+
+          <button
+            onClick={() => setIsClearInvoicesModalOpen(true)}
+            className="px-3 py-2 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-[#ef4444] hover:text-red-300 rounded-lg text-xs font-black uppercase tracking-wider flex items-center gap-1.5 cursor-pointer transition-colors"
+            title="Limpiar facturas de la base de datos"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            <span>LIMPIAR FACTURAS</span>
           </button>
 
           <button
@@ -260,15 +321,30 @@ export const AdminInvoices: React.FC<AdminInvoicesProps> = ({
                           <Download className="w-3 h-3" />
                           <span>PDF</span>
                         </button>
-                        {inv.status === 'paid' && (
+                        {inv.status === 'paid' ? (
                           <button
                             onClick={() => handleCancelInvoice(inv)}
-                            className="px-2 py-1 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/20 text-amber-400 rounded-lg text-[10px] font-black uppercase tracking-wider cursor-pointer transition-colors"
-                            title="Anular comprobante oficialmente"
+                            className="px-2 py-1 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-400 rounded-lg text-[10px] font-black uppercase tracking-wider cursor-pointer transition-colors"
+                            title="Anular factura oficialmente"
                           >
                             ANULAR
                           </button>
+                        ) : (
+                          <span
+                            className="px-2 py-1 bg-white/5 border border-white/10 text-white/30 rounded-lg text-[10px] font-black uppercase tracking-wider"
+                            title="Esta factura ya se encuentra anulada"
+                          >
+                            ANULADA
+                          </span>
                         )}
+
+                        <button
+                          onClick={() => handleDeleteInvoice(inv)}
+                          className="p-1.5 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-[#ef4444] hover:text-red-300 rounded-lg text-[10px] font-bold cursor-pointer transition-colors"
+                          title="Borrar factura definitivamente de la base de datos"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -278,6 +354,133 @@ export const AdminInvoices: React.FC<AdminInvoicesProps> = ({
           </div>
         )}
       </div>
+
+      {/* Modal Limpiar Facturas */}
+      {isClearInvoicesModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xs">
+          <div className="bg-[#0d0d0d] rounded-xl max-w-md w-full p-6 border border-white/10 shadow-2xl relative text-white animate-in fade-in zoom-in-95 font-mono">
+            <button
+              onClick={() => setIsClearInvoicesModalOpen(false)}
+              className="absolute top-4 right-4 text-white/40 hover:text-white"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-lg bg-red-500/20 border border-red-500/30 flex items-center justify-center text-[#ef4444]">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-display font-black text-lg text-white uppercase tracking-tight">
+                  DEPURAR FACTURAS
+                </h3>
+                <p className="text-[10px] text-white/40 uppercase">
+                  Limpieza y mantenimiento de registros fiscales
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-3 mb-6 text-xs">
+              <p className="text-white/70">
+                Selecciona qué grupo de facturas deseas eliminar permanentemente:
+              </p>
+
+              <label className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
+                clearInvoicesMode === 'cancelled'
+                  ? 'bg-red-500/15 border-red-500/40 text-white'
+                  : 'bg-[#141414] border-white/10 text-white/60 hover:text-white'
+              }`}>
+                <input
+                  type="radio"
+                  name="clear_inv_mode"
+                  checked={clearInvoicesMode === 'cancelled'}
+                  onChange={() => setClearInvoicesMode('cancelled')}
+                  className="mt-0.5 accent-[#dc2626]"
+                />
+                <div>
+                  <p className="font-bold uppercase text-[11px] text-[#ef4444]">
+                    Solo facturas anuladas (Recomendado)
+                  </p>
+                  <p className="text-[10px] text-white/40 mt-0.5">
+                    Elimina facturas anuladas y sus comprobantes hijos.
+                  </p>
+                </div>
+              </label>
+
+              <label className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
+                clearInvoicesMode === 'all'
+                  ? 'bg-red-500/25 border-red-500/60 text-white'
+                  : 'bg-[#141414] border-white/10 text-white/60 hover:text-white'
+              }`}>
+                <input
+                  type="radio"
+                  name="clear_inv_mode"
+                  checked={clearInvoicesMode === 'all'}
+                  onChange={() => setClearInvoicesMode('all')}
+                  className="mt-0.5 accent-[#dc2626]"
+                />
+                <div>
+                  <p className="font-bold uppercase text-[11px] text-red-400">
+                    Todas las facturas (Reinicio total)
+                  </p>
+                  <p className="text-[10px] text-white/40 mt-0.5">
+                    Borra todo el historial de facturas (usar únicamente tras pruebas).
+                  </p>
+                </div>
+              </label>
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setIsClearInvoicesModalOpen(false)}
+                className="flex-1 py-2.5 bg-white/10 hover:bg-white/20 text-white text-xs font-black uppercase tracking-wider rounded-lg transition-colors cursor-pointer"
+              >
+                CANCELAR
+              </button>
+              <button
+                type="button"
+                onClick={handleClearInvoicesClick}
+                disabled={isClearingInvoices}
+                className="flex-1 py-2.5 bg-[#dc2626] hover:bg-[#ef4444] text-white text-xs font-black uppercase tracking-wider rounded-lg transition-colors cursor-pointer disabled:opacity-50 accent-glow"
+              >
+                CONTINUAR
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ConfirmModal para eliminar una factura individual */}
+      <ConfirmModal
+        isOpen={Boolean(invoiceToDelete)}
+        onClose={() => setInvoiceToDelete(null)}
+        onConfirm={executeDeleteInvoice}
+        title="¿Eliminar esta factura permanentemente?"
+        message={`Estás a punto de borrar la factura ${invoiceToDelete?.invoice_number} por un monto de ${formatCurrency(invoiceToDelete?.total || 0)}. Esta acción borrará sus líneas contables.`}
+        warningNote="Esta acción es irreversible en la base de datos contable."
+        confirmLabel="Eliminar Factura"
+        cancelLabel="Cancelar"
+        isDestructive={true}
+        requireKeyword="ELIMINAR"
+      />
+
+      {/* ConfirmModal para vaciado masivo */}
+      <ConfirmModal
+        isOpen={isConfirmingClear}
+        onClose={() => setIsConfirmingClear(false)}
+        onConfirm={executeClearInvoices}
+        title={`¿Depurar ${clearInvoicesMode === 'all' ? 'TODAS LAS FACTURAS' : 'Facturas Anuladas'}?`}
+        message={clearInvoicesMode === 'all'
+          ? 'ADVERTENCIA CRÍTICA: Estás solicitando borrar TODO el historial de facturas emitidas por la papelería.'
+          : 'Se eliminarán permanentemente todas las facturas que tengan estado "cancelled".'}
+        warningNote="Pérdida permanente de registros contables seleccionados."
+        confirmLabel="Confirmar Depuración"
+        cancelLabel="Cancelar"
+        isDestructive={true}
+        requireKeyword={clearInvoicesMode === 'all' ? 'ELIMINAR' : undefined}
+        isLoading={isClearingInvoices}
+      />
     </div>
   );
 };

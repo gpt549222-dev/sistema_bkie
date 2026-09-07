@@ -10,6 +10,7 @@ import { getCategories, getProducts } from '../../services/productService';
 import { Offer, Category, Product, OfferType, OfferStatus } from '../../types';
 import { formatCurrency } from '../../utils/currency';
 import { useRealtime } from '../../context/RealtimeContext';
+import { ConfirmModal } from '../common/ConfirmModal';
 import {
   Tag,
   Plus,
@@ -28,6 +29,7 @@ export const AdminOffers: React.FC = () => {
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingOffer, setEditingOffer] = useState<Offer | null>(null);
+  const [offerToDelete, setOfferToDelete] = useState<Offer | null>(null);
   const [formData, setFormData] = useState({
     name: '',
     description: '',
@@ -146,14 +148,18 @@ export const AdminOffers: React.FC = () => {
     }
   };
 
-  const handleDelete = async (offer: Offer) => {
-    if (confirm(`¿Eliminar la promoción "${offer.name}"?`)) {
-      try {
-        await deleteOffer(offer.id);
-        triggerGlobalRefresh();
-      } catch (err: any) {
-        alert(`Error al eliminar: ${err.message}`);
-      }
+  const handleDelete = (offer: Offer) => {
+    setOfferToDelete(offer);
+  };
+
+  const handleExecuteDeleteOffer = async () => {
+    if (!offerToDelete) return;
+    try {
+      await deleteOffer(offerToDelete.id);
+      setOfferToDelete(null);
+      triggerGlobalRefresh();
+    } catch (err: any) {
+      alert(`Error al eliminar: ${err.message}`);
     }
   };
 
@@ -468,6 +474,18 @@ export const AdminOffers: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* ConfirmModal para eliminar promoción */}
+      <ConfirmModal
+        isOpen={Boolean(offerToDelete)}
+        onClose={() => setOfferToDelete(null)}
+        onConfirm={handleExecuteDeleteOffer}
+        title="Eliminar Promoción"
+        message={`¿Estás seguro de que deseas eliminar permanentemente la promoción "${offerToDelete?.name}"?`}
+        warningNote="Los descuentos vinculados a esta oferta dejarán de aplicarse inmediatamente."
+        requireKeyword="ELIMINAR"
+        confirmLabel="Eliminar Promoción"
+      />
     </div>
   );
 };

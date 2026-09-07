@@ -178,11 +178,11 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xs overflow-y-auto">
-      <div className="bg-[#0d0d0d] rounded-sm max-w-2xl w-full p-6 sm:p-8 shadow-2xl border border-white/10 text-white relative my-8 animate-in fade-in zoom-in-95 duration-200">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/85 backdrop-blur-xs overflow-y-auto">
+      <div className="bg-[#0d0d0d] rounded-xl max-w-2xl w-full p-4 sm:p-8 shadow-2xl border border-white/10 text-white relative my-auto sm:my-8 animate-in fade-in zoom-in-95 duration-200 font-mono">
         <button
           onClick={onClose}
-          className="absolute top-4 right-4 p-2 text-white/40 hover:text-white hover:bg-white/5 border border-transparent hover:border-white/10 rounded-xs transition-colors cursor-pointer"
+          className="absolute top-4 right-4 p-2 text-white/40 hover:text-white hover:bg-white/5 border border-transparent hover:border-white/10 rounded-lg transition-colors cursor-pointer"
         >
           <X className="w-5 h-5" />
         </button>
@@ -190,7 +190,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
         {/* Success Screen */}
         {createdOrderInfo ? (
           <div className="text-center py-6 font-mono">
-            <div className="w-16 h-16 rounded-xs bg-[#ff3e00] text-black flex items-center justify-center mx-auto mb-4 accent-glow animate-bounce">
+            <div className="w-16 h-16 rounded-xl bg-[#dc2626] text-white flex items-center justify-center mx-auto mb-4 accent-glow animate-bounce">
               <CheckCircle2 className="w-8 h-8" />
             </div>
 
@@ -198,11 +198,11 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
               ¡PEDIDO CONFIRMADO CON ÉXITO!
             </h2>
 
-            <div className="my-4 inline-block px-5 py-2.5 rounded-xs bg-[#141414] border border-white/10">
+            <div className="my-4 inline-block px-5 py-2.5 rounded-lg bg-[#141414] border border-white/10">
               <span className="text-[10px] text-white/40 font-black uppercase tracking-widest block font-mono">
                 NÚMERO DE PEDIDO REGISTRADO
               </span>
-              <span className="text-2xl font-mono font-black text-[#ff3e00]">
+              <span className="text-2xl font-mono font-black text-[#ef4444]">
                 {createdOrderInfo.orderNumber}
               </span>
             </div>
@@ -212,8 +212,8 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
             </p>
 
             {/* Payment Details Box based on method */}
-            <div className="p-4 rounded-xs bg-[#141414] border border-white/10 text-left mb-6 text-xs text-white/80 space-y-2 font-mono">
-              <p className="font-black text-white uppercase tracking-wider flex items-center gap-1.5 text-xs text-[#ff3e00]">
+            <div className="p-4 rounded-lg bg-[#141414] border border-white/10 text-left mb-6 text-xs text-white/80 space-y-2 font-mono">
+              <p className="font-black text-white uppercase tracking-wider flex items-center gap-1.5 text-xs text-[#ef4444]">
                 <Receipt className="w-4 h-4" />
                 INSTRUCCIONES DE PAGO {paymentMethod ? `(${(paymentMethod || '').toUpperCase()})` : ''}:
               </p>
@@ -254,14 +254,14 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                 href={generateWhatsAppLink()}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="px-6 py-3.5 bg-emerald-500 hover:bg-emerald-400 text-black font-black uppercase tracking-wider rounded-xs text-xs flex items-center justify-center gap-2 transition-all cursor-pointer shadow-lg"
+                className="px-6 py-3.5 bg-emerald-500 hover:bg-emerald-400 text-black font-black uppercase tracking-wider rounded-lg text-xs flex items-center justify-center gap-2 transition-all cursor-pointer shadow-lg"
               >
                 <Send className="w-4 h-4" />
                 <span>CONFIRMAR POR WHATSAPP</span>
               </a>
               <button
                 onClick={onClose}
-                className="px-6 py-3.5 bg-white/10 hover:bg-white/20 border border-white/20 text-white font-black uppercase tracking-wider rounded-xs text-xs transition-all cursor-pointer"
+                className="px-6 py-3.5 bg-white/10 hover:bg-white/20 border border-white/20 text-white font-black uppercase tracking-wider rounded-lg text-xs transition-all cursor-pointer"
               >
                 VOLVER AL CATÁLOGO
               </button>

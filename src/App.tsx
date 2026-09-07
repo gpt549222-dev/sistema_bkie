@@ -36,6 +36,7 @@ import { getBusinessSettings } from './services/settingsService';
 import { isConfigured } from './services/supabase';
 import { useAuth } from './context/AuthContext';
 import { useRealtime } from './context/RealtimeContext';
+import { useCart } from './context/CartContext';
 import { Product, Category, Offer, Order, Invoice, BusinessSettings } from './types';
 import {
   Sparkles,
@@ -46,11 +47,13 @@ import {
   Search,
   BookOpen,
   AlertTriangle,
+  Camera,
 } from 'lucide-react';
 
 export function App() {
   const { isAdmin, isAuthenticated } = useAuth();
   const { refreshTrigger } = useRealtime();
+  const { itemCount, setIsCartOpen } = useCart();
 
   // App Navigation View
   const [currentView, setCurrentView] = useState<'storefront' | 'admin'>('storefront');
@@ -257,7 +260,7 @@ export function App() {
       />
 
       {/* Main Content Area */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-5 sm:py-8 pb-24 sm:pb-8">
 
         {/* Hero Promotion Banner */}
         <HeroBanner
@@ -309,7 +312,7 @@ export function App() {
       </main>
 
       {/* Footer */}
-      <footer className="bg-[#050505] text-white border-t border-white/10 pt-14 pb-10">
+      <footer className="bg-[#050505] text-white border-t border-white/10 pt-14 pb-20 md:pb-10">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-8 pb-10 border-b border-white/10 text-xs">
             {/* Brand column */}
@@ -379,6 +382,54 @@ export function App() {
           </div>
         </div>
       </footer>
+
+      {/* Mobile Sticky Bottom Navigation Dock (Optimized for phones) */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#0c0c0c]/95 backdrop-blur-lg border-t border-white/10 px-3 py-2 flex items-center justify-around text-white select-none shadow-2xl">
+        <button
+          onClick={() => {
+            setSelectedCategoryId(null);
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+          }}
+          className="flex flex-col items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-white/70 hover:text-white transition-colors cursor-pointer py-1 px-2"
+        >
+          <BookOpen className="w-4 h-4 text-[#ef4444]" />
+          <span>Catálogo</span>
+        </button>
+
+        <button
+          onClick={() => setIsAiScannerOpen(true)}
+          className="flex flex-col items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-white/70 hover:text-white transition-colors cursor-pointer py-1 px-2"
+        >
+          <div className="relative">
+            <Camera className="w-4 h-4 text-white" />
+            <Sparkles className="w-2.5 h-2.5 text-amber-400 absolute -top-1 -right-1" />
+          </div>
+          <span>Lista IA</span>
+        </button>
+
+        <button
+          onClick={() => setIsTrackingOpen(true)}
+          className="flex flex-col items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-white/70 hover:text-white transition-colors cursor-pointer py-1 px-2"
+        >
+          <Truck className="w-4 h-4 text-emerald-400" />
+          <span>Rastrear</span>
+        </button>
+
+        <button
+          onClick={() => setIsCartOpen(true)}
+          className="relative flex flex-col items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-white transition-colors cursor-pointer py-1 px-2"
+        >
+          <div className="relative">
+            <ShoppingBag className="w-4 h-4 text-[#ef4444]" />
+            {itemCount > 0 && (
+              <span className="absolute -top-1.5 -right-2.5 bg-[#dc2626] text-white font-mono font-black text-[9px] w-4 h-4 rounded-full flex items-center justify-center">
+                {itemCount}
+              </span>
+            )}
+          </div>
+          <span>Carrito</span>
+        </button>
+      </nav>
 
       {/* AI List Scanner Modal for clients */}
       <AiListScannerModal

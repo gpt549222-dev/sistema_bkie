@@ -3,6 +3,7 @@ import { Product, Offer } from '../../types';
 import { calculateProductPrice } from '../../services/pricingEngine';
 import { useCart } from '../../context/CartContext';
 import { formatCurrency } from '../../utils/currency';
+import { ProductImage } from '../common/ProductImage';
 import { X, Plus, Minus, ShoppingBag, Tag, CheckCircle2, AlertCircle, ShieldCheck } from 'lucide-react';
 
 interface ProductDetailModalProps {
@@ -42,20 +43,15 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
         </button>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 sm:gap-8 items-start">
-          {/* Image box */}
+          {/* Image box with reliable sanitization & fallback */}
           <div className="relative aspect-square rounded-lg bg-[#171717] overflow-hidden border border-white/10">
-            {product.image_url ? (
-              <img
-                src={product.image_url}
-                alt={product.name}
-                referrerPolicy="no-referrer"
-                className="w-full h-full object-cover"
-              />
-            ) : (
-              <div className="w-full h-full flex items-center justify-center text-white/20 font-display font-black text-3xl tracking-tighter">
-                BIKIE.
-              </div>
-            )}
+            <ProductImage
+              src={product.image_url}
+              alt={product.name}
+              categoryName={product.category?.name}
+              fallbackText="BIKIE"
+              className="w-full h-full object-cover"
+            />
             {hasDiscount && (
               <div className="absolute top-3 left-3 bg-[#dc2626] text-white text-[10px] font-black px-2.5 py-1 rounded shadow-md flex items-center gap-1 uppercase tracking-wider accent-glow">
                 <Tag className="w-3.5 h-3.5" />

@@ -207,3 +207,75 @@ export async function cancelOrder(
     throw new Error('No se pudo completar la cancelación y restitución de inventario.');
   }
 }
+
+export async function deleteOrder(orderId: string): Promise<void> {
+  // 1. Intentar por RPC atómico
+  try {
+    const { data: rpcData, error: rpcError } = await supabase.rpc('delete_order_atomic', {
+      p_order_id: orderId,
+    });
+    if (!rpcError && rpcData?.success) {
+      return;
+    }
+  } catch {}
+
+  // 2. Fallback seguro en cascada en Supabase
+  await supabase.from('order_items').delete().eq('order_id', orderId);
+  await supabase.from('order_status_history').delete().eq('order_id', orderId);
+  await supabase.from('payments').delete().eq('order_id', orderId);
+  await supabase.from('sales').update({ order_id: null }).eq('order_id', orderId);
+  await supabase.from('invoices').update({ order_id: null }).eq('order_id', orderId);
+
+  const { error } = await supabase.from('orders').delete().eq('id', orderId);
+  if (error) {
+    throw new Error(`Error al eliminar pedido: ${error.message}`);
+  }
+}
+
+export async function clearOrders(
+  mode: 'all' | 'cancelled' | 'delivered' = 'cancelled'
+): Promise<number> {
+  // 1. Intentar RPC atómico
+  try {
+    const { data: rpcData, error: rpcError } = await supabase.rpc('clear_orders_atomic', {
+      p_mode: mode,
+    });
+    if (!rpcError && typeof rpcData?.deleted_count === 'number') {
+      return rpcData.deleted_count;
+    }
+  } catch {}
+
+  // 2. Fallback seguro en Supabase
+  let query = supabase.from('orders').select('id');
+  if (mode === 'cancelled') {
+    query = query.eq('status', 'cancelled');
+  } else if (mode === 'delivered') {
+    query = query.eq('status', 'delivered');
+  }
+
+  const { data: targetOrders, error: fetchErr } = await query;
+  if (fetchErr) {
+    throw new Error(`Error al consultar pedidos para limpiar: ${fetchErr.message}`);
+  }
+
+  if (!targetOrders || targetOrders.length === 0) {
+    return 0;
+  }
+
+  const orderIds = targetOrders.map((o: any) => o.id);
+
+  // Eliminar referencias hijas
+  await supabase.from('order_items').delete().in('order_id', orderIds);
+  await supabase.from('order_status_history').delete().in('order_id', orderIds);
+  await supabase.from('payments').delete().in('order_id', orderIds);
+  await supabase.from('sales').update({ order_id: null }).in('order_id', orderIds);
+  await supabase.from('invoices').update({ order_id: null }).in('order_id', orderIds);
+
+  const { error: delErr } = await supabase.from('orders').delete().in('id', orderIds);
+  if (delErr) {
+    throw new Error(`Error al eliminar pedidos seleccionados: ${delErr.message}`);
+  }
+
+  return orderIds.length;
+}
+

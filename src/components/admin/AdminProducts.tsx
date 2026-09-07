@@ -17,6 +17,8 @@ import {
 } from '../../utils/barcode';
 import { BarcodePrintModal } from './BarcodePrintModal';
 import { BatchBarcodeModal } from './BatchBarcodeModal';
+import { ProductImage, sanitizeImageUrl } from '../common/ProductImage';
+import { ConfirmModal } from '../common/ConfirmModal';
 import { useRealtime } from '../../context/RealtimeContext';
 import {
   Package,
@@ -36,6 +38,8 @@ import {
   Barcode,
   Printer,
   Wand2,
+  Upload,
+  Image as ImageIcon,
 } from 'lucide-react';
 
 export const AdminProducts: React.FC = () => {
@@ -50,6 +54,8 @@ export const AdminProducts: React.FC = () => {
   const [isBatchModalOpen, setIsBatchModalOpen] = useState(false);
   const [openPrintAfterCreate, setOpenPrintAfterCreate] = useState(true);
   const formBarcodeSvgRef = useRef<SVGSVGElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [isUploadingImage, setIsUploadingImage] = useState(false);
 
   // Edit / Create Modal state
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -73,6 +79,8 @@ export const AdminProducts: React.FC = () => {
   const [stockAdjustmentQty, setStockAdjustmentQty] = useState<number>(0);
   const [stockAdjustmentReason, setStockAdjustmentReason] = useState<string>('');
   const [isAdjustingStock, setIsAdjustingStock] = useState(false);
+  const [productToDelete, setProductToDelete] = useState<Product | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const { refreshTrigger, triggerGlobalRefresh } = useRealtime();
 
@@ -140,6 +148,62 @@ export const AdminProducts: React.FC = () => {
     });
     setOpenPrintAfterCreate(false);
     setIsModalOpen(true);
+  };
+
+  const handleImageFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      alert('Por favor selecciona un archivo de imagen válido (JPG, PNG, WEBP).');
+      return;
+    }
+
+    // Comprimir o convertir imagen a base64 de tamaño óptimo (<800px)
+    setIsUploadingImage(true);
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new window.Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const MAX_WIDTH = 800;
+        const MAX_HEIGHT = 800;
+        let width = img.width;
+        let height = img.height;
+
+        if (width > height) {
+          if (width > MAX_WIDTH) {
+            height = Math.round((height * MAX_WIDTH) / width);
+            width = MAX_WIDTH;
+          }
+        } else {
+          if (height > MAX_HEIGHT) {
+            width = Math.round((width * MAX_HEIGHT) / height);
+            height = MAX_HEIGHT;
+          }
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, width, height);
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+          setFormData((prev) => ({ ...prev, image_url: dataUrl }));
+        }
+        setIsUploadingImage(false);
+      };
+      img.onerror = () => {
+        setIsUploadingImage(false);
+        alert('No se pudo procesar la imagen seleccionada.');
+      };
+      img.src = event.target?.result as string;
+    };
+    reader.onerror = () => {
+      setIsUploadingImage(false);
+      alert('Error al leer el archivo de imagen.');
+    };
+    reader.readAsDataURL(file);
   };
 
   const handleSaveProduct = async (e: React.FormEvent) => {
@@ -230,14 +294,21 @@ export const AdminProducts: React.FC = () => {
     }
   };
 
-  const handleDelete = async (product: Product) => {
-    if (confirm(`¿Desactivar o eliminar el artículo "${product.name}"?`)) {
-      try {
-        await deleteProduct(product.id);
-        triggerGlobalRefresh();
-      } catch (err: any) {
-        alert(`Error: ${err.message}`);
-      }
+  const handleDelete = (product: Product) => {
+    setProductToDelete(product);
+  };
+
+  const executeDeleteProduct = async () => {
+    if (!productToDelete) return;
+    setIsDeleting(true);
+    try {
+      await deleteProduct(productToDelete.id);
+      triggerGlobalRefresh();
+      setProductToDelete(null);
+    } catch (err: any) {
+      alert(`Error al eliminar el producto: ${err.message}`);
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -359,18 +430,12 @@ export const AdminProducts: React.FC = () => {
                       <td className="py-3">
                         <div className="flex items-center gap-3">
                           <div className="w-10 h-10 rounded-lg bg-[#141414] overflow-hidden border border-white/10 shrink-0">
-                            {product.image_url ? (
-                              <img
-                                src={product.image_url}
-                                alt={product.name}
-                                referrerPolicy="no-referrer"
-                                className="w-full h-full object-cover"
-                              />
-                            ) : (
-                              <div className="w-full h-full flex items-center justify-center text-[9px] font-black text-white/30">
-                                BIKIE
-                              </div>
-                            )}
+                            <ProductImage
+                              src={product.image_url}
+                              alt={product.name}
+                              fallbackText="BIKIE"
+                              className="w-full h-full object-cover"
+                            />
                           </div>
                           <div>
                             <p className="font-bold text-white uppercase">{product.name}</p>
@@ -618,15 +683,80 @@ export const AdminProducts: React.FC = () => {
                 </div>
               </div>
 
-              <div>
-                <label className="block font-black text-white/60 uppercase tracking-wider mb-1">URL DE IMAGEN</label>
-                <input
-                  type="url"
-                  value={formData.image_url}
-                  onChange={(e) => setFormData({ ...formData, image_url: e.target.value })}
-                  placeholder="https://images.unsplash.com/..."
-                  className="w-full p-2.5 bg-[#141414] border border-white/10 rounded-lg text-white placeholder:text-white/30 focus:border-[#dc2626] focus:outline-hidden"
-                />
+              {/* Imagen del producto con sanitización, subida local y preview */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="block font-black text-white/60 uppercase tracking-wider text-xs">
+                    FOTO DEL PRODUCTO
+                  </label>
+                  <span className="text-[10px] text-white/40 uppercase font-mono">
+                    ENLACE WEB O SUBIR DESDE DISPOSITIVO
+                  </span>
+                </div>
+
+                <div className="flex flex-col sm:flex-row gap-3 items-start">
+                  {/* Vista previa miniatura interactiva */}
+                  <div className="w-24 h-24 rounded-lg bg-[#141414] border border-white/10 overflow-hidden shrink-0 relative group">
+                    <ProductImage
+                      src={formData.image_url}
+                      alt={formData.name || 'Vista previa'}
+                      fallbackText="BIKIE"
+                      className="w-full h-full object-cover"
+                    />
+                    {formData.image_url && (
+                      <button
+                        type="button"
+                        onClick={() => setFormData({ ...formData, image_url: '' })}
+                        className="absolute top-1 right-1 p-1 bg-red-600 hover:bg-red-700 text-white rounded text-[9px] font-black cursor-pointer shadow-xs"
+                        title="Quitar foto"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Controles de URL y Subida */}
+                  <div className="flex-1 w-full space-y-2">
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={formData.image_url}
+                        onChange={(e) => setFormData({ ...formData, image_url: e.target.value })}
+                        onBlur={() => {
+                          if (formData.image_url) {
+                            const cleaned = sanitizeImageUrl(formData.image_url);
+                            if (cleaned) setFormData({ ...formData, image_url: cleaned });
+                          }
+                        }}
+                        placeholder="Pega enlace URL (Unsplash, web, Google...)"
+                        className="flex-1 p-2.5 bg-[#141414] border border-white/10 rounded-lg text-white text-xs placeholder:text-white/30 focus:border-[#dc2626] focus:outline-hidden"
+                      />
+                      <input
+                        type="file"
+                        ref={fileInputRef}
+                        accept="image/*"
+                        onChange={handleImageFileUpload}
+                        className="hidden"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={isUploadingImage}
+                        className="px-3 py-2 bg-white/10 hover:bg-white/20 border border-white/15 text-white rounded-lg text-xs font-black uppercase tracking-wider flex items-center gap-1.5 cursor-pointer shrink-0 transition-colors"
+                        title="Seleccionar foto desde tu computadora o teléfono"
+                      >
+                        <Upload className="w-3.5 h-3.5 text-[#ef4444]" />
+                        <span>{isUploadingImage ? 'SUBIENDO...' : 'SUBIR FOTO'}</span>
+                      </button>
+                    </div>
+
+                    <p className="text-[10px] text-white/40 font-mono">
+                      {formData.image_url
+                        ? '✓ Enlace optimizado y validado para cargar sin fallos.'
+                        : 'Introduce un enlace directo o pulsa "SUBIR FOTO" para adjuntarla directamente.'}
+                    </p>
+                  </div>
+                </div>
               </div>
 
               <div className="flex items-center gap-2 pt-2">
@@ -780,6 +910,20 @@ export const AdminProducts: React.FC = () => {
           onClose={() => setIsBatchModalOpen(false)}
         />
       )}
+
+      {/* Modal de Confirmación de Eliminación de Producto */}
+      <ConfirmModal
+        isOpen={Boolean(productToDelete)}
+        onClose={() => setProductToDelete(null)}
+        onConfirm={executeDeleteProduct}
+        title="¿Eliminar este producto?"
+        message={`Estás a punto de eliminar "${productToDelete?.name}" (${productToDelete?.code}). Si el producto tiene historial de ventas o inventario, se desactivará de forma segura.`}
+        warningNote="Esta acción es irreversible si no existen registros vinculados."
+        confirmLabel="Eliminar Producto"
+        cancelLabel="Cancelar"
+        isDestructive={true}
+        isLoading={isDeleting}
+      />
     </div>
   );
 };

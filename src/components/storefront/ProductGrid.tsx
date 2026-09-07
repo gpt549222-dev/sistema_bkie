@@ -3,6 +3,7 @@ import { Product, Offer } from '../../types';
 import { calculateProductPrice } from '../../services/pricingEngine';
 import { useCart } from '../../context/CartContext';
 import { formatCurrency } from '../../utils/currency';
+import { ProductImage } from '../common/ProductImage';
 import { Plus, Tag, Eye, CheckCircle2, AlertCircle, PackageX } from 'lucide-react';
 
 interface ProductGridProps {
@@ -55,7 +56,7 @@ export const ProductGrid: React.FC<ProductGridProps> = ({
   }
 
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-6">
+    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2.5 sm:gap-4 md:gap-6">
       {products.map((product) => {
         const priceInfo = calculateProductPrice(product, offers, 1);
         const hasDiscount = priceInfo.discountAmount > 0;
@@ -65,12 +66,12 @@ export const ProductGrid: React.FC<ProductGridProps> = ({
         return (
           <div
             key={product.id}
-            className="group relative bg-[#0f0f0f] rounded-xl border border-white/10 p-3.5 sm:p-4 flex flex-col justify-between hover:border-[#dc2626]/60 hover:shadow-2xl transition-all duration-200 select-none"
+            className="group relative bg-[#0f0f0f] rounded-xl border border-white/10 p-2.5 sm:p-4 flex flex-col justify-between hover:border-[#dc2626]/60 hover:shadow-2xl transition-all duration-200 select-none"
           >
             {/* Discount Badge */}
             {hasDiscount && (
-              <div className="absolute top-3 left-3 z-10 bg-[#dc2626] text-white text-[10px] font-black px-2 py-0.5 rounded shadow-md flex items-center gap-1 uppercase tracking-wider accent-glow">
-                <Tag className="w-2.5 h-2.5" />
+              <div className="absolute top-2 left-2 sm:top-3 sm:left-3 z-10 bg-[#dc2626] text-white text-[9px] sm:text-[10px] font-black px-1.5 sm:px-2 py-0.5 rounded shadow-md flex items-center gap-1 uppercase tracking-wider accent-glow">
+                <Tag className="w-2 sm:w-2.5 h-2 sm:h-2.5" />
                 <span>
                   {priceInfo.discountPercentage > 0
                     ? `-${priceInfo.discountPercentage}%`
@@ -79,26 +80,21 @@ export const ProductGrid: React.FC<ProductGridProps> = ({
               </div>
             )}
 
-            {/* Product Image Container */}
+            {/* Product Image Container with reliable sanitization & fallback */}
             <div
               onClick={() => onSelectProduct(product)}
-              className="relative w-full aspect-square rounded-lg bg-[#171717] border border-white/5 overflow-hidden mb-3 cursor-pointer"
+              className="relative w-full aspect-square rounded-lg bg-[#171717] border border-white/5 overflow-hidden mb-2 sm:mb-3 cursor-pointer"
             >
-              {product.image_url ? (
-                <img
-                  src={product.image_url}
-                  alt={product.name}
-                  referrerPolicy="no-referrer"
-                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300 opacity-90 group-hover:opacity-100"
-                />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center text-white/20 font-display font-black text-2xl tracking-tighter">
-                  BIKIE.
-                </div>
-              )}
+              <ProductImage
+                src={product.image_url}
+                alt={product.name}
+                categoryName={product.category?.name}
+                fallbackText="BIKIE"
+                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+              />
 
               {/* Quick preview overlay button */}
-              <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
+              <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity hidden sm:flex items-center justify-center gap-2">
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
@@ -107,7 +103,7 @@ export const ProductGrid: React.FC<ProductGridProps> = ({
                   className="px-3 py-2 bg-white hover:bg-[#dc2626] text-black hover:text-white rounded-lg shadow-lg font-black text-[10px] uppercase tracking-widest flex items-center gap-1.5 cursor-pointer transition-colors"
                 >
                   <Eye className="w-3 h-3" />
-                  <span className="hidden sm:inline">VER DETALLE</span>
+                  <span>VER DETALLE</span>
                 </button>
               </div>
             </div>

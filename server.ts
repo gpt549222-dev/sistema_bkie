@@ -25,6 +25,18 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
+  // CORS middleware for API endpoints
+  app.use('/api', (req, res, next) => {
+    const origin = req.headers.origin || '*';
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    if (req.method === 'OPTIONS') {
+      return res.sendStatus(204);
+    }
+    next();
+  });
+
   // JSON Body Parser with high limit for images
   app.use(express.json({ limit: '15mb' }));
 

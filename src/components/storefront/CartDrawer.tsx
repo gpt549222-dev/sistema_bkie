@@ -1,6 +1,7 @@
 import React from 'react';
 import { useCart } from '../../context/CartContext';
 import { formatCurrency } from '../../utils/currency';
+import { ProductImage } from '../common/ProductImage';
 import {
   X,
   Trash2,
@@ -39,7 +40,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ onProceedToCheckout }) =
         className="absolute inset-0 bg-black/80 backdrop-blur-xs transition-opacity"
       />
 
-      <div className="absolute inset-y-0 right-0 max-w-full flex pl-6 sm:pl-10">
+      <div className="absolute inset-y-0 right-0 max-w-full flex pl-0 sm:pl-10">
         <div className="w-screen max-w-md bg-[#0d0d0d] border-l border-white/10 text-white shadow-2xl flex flex-col justify-between">
           {/* Top header */}
           <div className="p-5 sm:p-6 border-b border-white/10 flex items-center justify-between">
@@ -98,20 +99,14 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ onProceedToCheckout }) =
                     key={product.id}
                     className="flex gap-3.5 p-3 rounded-xl bg-[#141414] border border-white/10 items-center justify-between shadow-sm"
                   >
-                    {/* Item thumbnail */}
+                    {/* Item thumbnail with sanitization & fallback */}
                     <div className="w-16 h-16 rounded-lg bg-[#1a1a1a] border border-white/10 overflow-hidden shrink-0">
-                      {product.image_url ? (
-                        <img
-                          src={product.image_url}
-                          alt={product.name}
-                          referrerPolicy="no-referrer"
-                          className="w-full h-full object-cover"
-                        />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center text-[10px] font-black text-white/30 font-display">
-                          BIKIE
-                        </div>
-                      )}
+                      <ProductImage
+                        src={product.image_url}
+                        alt={product.name}
+                        fallbackText="BIKIE"
+                        className="w-full h-full object-cover"
+                      />
                     </div>
 
                     {/* Info */}
