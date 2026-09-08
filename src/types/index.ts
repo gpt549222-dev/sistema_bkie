@@ -365,7 +365,7 @@ export type PosScannerSessionStatus = 'waiting' | 'connected' | 'disconnected' |
 
 export interface PosScannerSession {
   id: string;
-  session_token: string;
+  session_token?: string;
   short_code: string;
   pos_identifier: string;
   created_by?: string | null;
@@ -382,7 +382,7 @@ export interface PosScannerSession {
 
 export interface ScannerScanEvent {
   scanner_session_id: string;
-  session_token: string;
+  session_token?: string;
   barcode: string;
   quantity?: number;
   timestamp: string;

@@ -121,7 +121,11 @@ export const MobileScanner: React.FC = () => {
       });
 
       setSession(ses);
-      setToken(ses.session_token);
+      if (ses.session_token) {
+        setToken(ses.session_token);
+      } else if (opts.token) {
+        setToken(opts.token.trim());
+      }
       playScanSound('connect');
       triggerVibration([40, 30, 40]);
     } catch (err: any) {
@@ -130,7 +134,6 @@ export const MobileScanner: React.FC = () => {
         // Fallback garantizado: si tiene el token escaneado por QR, conectar directamente
         const fallbackSes = {
           id: `conn_${Date.now()}`,
-          session_token: opts.token.trim(),
           short_code: opts.shortCode || '100000',
           pos_identifier: 'Caja Principal',
           status: 'connected' as const,
@@ -140,7 +143,7 @@ export const MobileScanner: React.FC = () => {
           expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
         };
         setSession(fallbackSes);
-        setToken(fallbackSes.session_token);
+        setToken(opts.token.trim());
         playScanSound('connect');
         triggerVibration([40, 30, 40]);
       } else {
@@ -162,7 +165,8 @@ export const MobileScanner: React.FC = () => {
       return;
     }
 
-    const channelName = `pos_scanner_${session.session_token}`;
+    const channelToken = session.session_token || token;
+    const channelName = channelToken ? `pos_scanner_${channelToken}` : `pos_scanner_${session.id}`;
     const channel = supabase.channel(channelName, {
       config: {
         broadcast: { ack: true, self: false },
@@ -239,7 +243,8 @@ export const MobileScanner: React.FC = () => {
               setSession(null);
               setConnectionError('La sesión de escáner ha expirado. Por favor genera un nuevo código en el POS.');
             } else {
-              setSession(updated);
+              const { session_token: _st, ...safeUpdated } = updated;
+              setSession((prev) => (prev ? { ...prev, ...safeUpdated } : (safeUpdated as PosScannerSession)));
             }
           }
         }
@@ -266,7 +271,7 @@ export const MobileScanner: React.FC = () => {
       supabase.removeChannel(channel);
       realtimeChannelRef.current = null;
     };
-  }, [session?.id, session?.session_token]);
+  }, [session?.id, session?.session_token, token]);
 
   // Handle barcode scanned from camera
   const handleBarcodeScanned = useCallback(
@@ -301,7 +306,6 @@ export const MobileScanner: React.FC = () => {
           event: 'barcode_scanned',
           payload: {
             scanner_session_id: session.id,
-            session_token: session.session_token,
             barcode,
             quantity: 1,
             timestamp: new Date().toISOString(),
@@ -312,7 +316,8 @@ export const MobileScanner: React.FC = () => {
 
       // 2. Validate with Supabase backend RPC (database source of truth and audit)
       try {
-        const validation = await validateScanEvent(session.session_token, barcode, getOrCreateDeviceId());
+        const activeToken = session.session_token || token || '';
+        const validation = await validateScanEvent(activeToken, barcode, getOrCreateDeviceId());
 
         if (validation.valid && validation.found) {
           playScanSound('success');
@@ -584,7 +589,7 @@ export const MobileScanner: React.FC = () => {
       try {
         await disconnectScannerSession({
           sessionId: session.id,
-          token: session.session_token,
+          token: session.session_token || token,
           deviceId: getOrCreateDeviceId(),
         });
       } catch {

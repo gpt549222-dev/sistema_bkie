@@ -288,5 +288,21 @@ export async function getScannerSessionStatus(params: {
     return null;
   }
 
-  return data as PosScannerSession;
+  // Garantizar que session_token NUNCA se propague en la respuesta de estado
+  const safeSession: PosScannerSession = {
+    id: data.session_id || data.id,
+    short_code: data.short_code,
+    pos_identifier: data.pos_identifier,
+    status: data.status,
+    device_id: data.device_id,
+    device_name: data.device_name,
+    created_at: data.created_at,
+    expires_at: data.expires_at,
+    connected_at: data.connected_at,
+    disconnected_at: data.disconnected_at,
+    last_scanned_barcode: data.last_scanned_barcode,
+    last_scanned_at: data.last_scanned_at,
+  };
+
+  return safeSession;
 }

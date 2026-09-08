@@ -148,7 +148,7 @@ export const AdminSettings: React.FC<AdminSettingsProps> = ({
   };
 
   const copySqlToClipboard = () => {
-    const sqlText = `-- Archivo DATOS.sql generado para Supabase\n-- Ejecutar en Supabase -> SQL Editor\n-- Contiene las funciones para crear usuarios, depurar pedidos y facturas.`;
+    const sqlText = `-- Archivo MODIF_DB.sql generado para Supabase\n-- Ejecutar en Supabase -> SQL Editor\n-- Contiene las funciones actualizadas y seguras para la base de datos.`;
     navigator.clipboard.writeText(sqlText);
     setCopiedSql(true);
     setTimeout(() => setCopiedSql(false), 3000);
@@ -472,7 +472,7 @@ export const AdminSettings: React.FC<AdminSettingsProps> = ({
             <div>
               <h3 className="text-sm font-black text-white uppercase tracking-wider flex items-center gap-2">
                 <Database className="w-4 h-4 text-[#ef4444]" />
-                <span>ARCHIVO DE BASE DE DATOS (DATOS.sql)</span>
+                <span>ARCHIVO DE BASE DE DATOS (MODIF_DB.sql)</span>
               </h3>
               <p className="text-[10px] text-white/40 uppercase mt-0.5">
                 ESTRUCTURAS, PERMISOS RPC Y FUNCIONES DE MIGRACIÓN PARA SUPABASE
@@ -490,7 +490,7 @@ export const AdminSettings: React.FC<AdminSettingsProps> = ({
 
           <div className="p-4 bg-[#141414] border border-white/10 rounded-lg space-y-3 text-xs">
             <p className="text-white/80 font-bold uppercase text-emerald-400">
-              ✓ Archivo <span className="font-mono underline">DATOS.sql</span> generado en la raíz del proyecto.
+              ✓ Archivo <span className="font-mono underline">MODIF_DB.sql</span> generado en la raíz del proyecto.
             </p>
             <p className="text-white/60">
               Contiene todas las funciones necesarias para crear usuarios con contraseñas encriptadas,
@@ -499,7 +499,7 @@ export const AdminSettings: React.FC<AdminSettingsProps> = ({
             <ol className="list-decimal list-inside space-y-1.5 text-white/70 text-[11px]">
               <li>Abre tu consola de proyecto en Supabase (<span className="text-[#ef4444]">supabase.com/dashboard</span>).</li>
               <li>Entra en la sección lateral <strong>SQL Editor</strong>.</li>
-              <li>Abre o copia el contenido del archivo <strong>DATOS.sql</strong> y presiona <strong>RUN</strong>.</li>
+              <li>Abre o copia el contenido del archivo <strong>MODIF_DB.sql</strong> y presiona <strong>RUN</strong>.</li>
               <li>Las funciones quedarán activadas de inmediato.</li>
             </ol>
           </div>
