@@ -17,7 +17,7 @@ import {
 } from '../../utils/barcode';
 import { BarcodePrintModal } from './BarcodePrintModal';
 import { BatchBarcodeModal } from './BatchBarcodeModal';
-import { ProductImage, sanitizeImageUrl } from '../common/ProductImage';
+import { ProductImage, sanitizeImageUrl, detectImageService } from '../common/ProductImage';
 import { ConfirmModal } from '../common/ConfirmModal';
 import { useRealtime } from '../../context/RealtimeContext';
 import {
@@ -223,7 +223,7 @@ export const AdminProducts: React.FC = () => {
           price: Number(formData.price),
           cost_price: Number(formData.cost_price),
           min_stock: Number(formData.min_stock),
-          image_url: formData.image_url.trim() || undefined,
+          image_url: sanitizeImageUrl(formData.image_url) || undefined,
           is_active: formData.is_active,
         });
 
@@ -252,7 +252,7 @@ export const AdminProducts: React.FC = () => {
           cost_price: Number(formData.cost_price),
           stock: Number(formData.stock),
           min_stock: Number(formData.min_stock),
-          image_url: formData.image_url.trim() || undefined,
+          image_url: sanitizeImageUrl(formData.image_url) || undefined,
           is_active: formData.is_active,
         });
 
@@ -722,13 +722,25 @@ export const AdminProducts: React.FC = () => {
                         type="text"
                         value={formData.image_url}
                         onChange={(e) => setFormData({ ...formData, image_url: e.target.value })}
+                        onPaste={(e) => {
+                          const pasted = e.clipboardData.getData('text');
+                          if (pasted) {
+                            const cleaned = sanitizeImageUrl(pasted);
+                            if (cleaned && cleaned !== pasted) {
+                              e.preventDefault();
+                              setFormData({ ...formData, image_url: cleaned });
+                            }
+                          }
+                        }}
                         onBlur={() => {
                           if (formData.image_url) {
                             const cleaned = sanitizeImageUrl(formData.image_url);
-                            if (cleaned) setFormData({ ...formData, image_url: cleaned });
+                            if (cleaned && cleaned !== formData.image_url) {
+                              setFormData({ ...formData, image_url: cleaned });
+                            }
                           }
                         }}
-                        placeholder="Pega enlace URL (Unsplash, web, Google...)"
+                        placeholder="Pega enlace de foto (Google Drive, Dropbox, Unsplash, web...)"
                         className="flex-1 p-2.5 bg-[#141414] border border-white/10 rounded-lg text-white text-xs placeholder:text-white/30 focus:border-[#dc2626] focus:outline-hidden"
                       />
                       <input
@@ -750,11 +762,28 @@ export const AdminProducts: React.FC = () => {
                       </button>
                     </div>
 
-                    <p className="text-[10px] text-white/40 font-mono">
-                      {formData.image_url
-                        ? '✓ Enlace optimizado y validado para cargar sin fallos.'
-                        : 'Introduce un enlace directo o pulsa "SUBIR FOTO" para adjuntarla directamente.'}
-                    </p>
+                    {/* Detección y validación del servicio de imagen */}
+                    {formData.image_url ? (
+                      <div className="flex items-center gap-2">
+                        {(() => {
+                          const info = detectImageService(formData.image_url);
+                          return info ? (
+                            <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-400 bg-emerald-950/40 border border-emerald-500/20 px-2 py-0.5 rounded font-mono">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                              {info.label}
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-white/50 font-mono">
+                              ✓ Enlace optimizado para carga directa
+                            </span>
+                          );
+                        })()}
+                      </div>
+                    ) : (
+                      <p className="text-[10px] text-white/40 font-mono">
+                        Soporta enlaces de Google Drive, Dropbox, Unsplash, GitHub y fotos directas de internet.
+                      </p>
+                    )}
                   </div>
                 </div>
               </div>

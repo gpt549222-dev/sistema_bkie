@@ -1,5 +1,6 @@
 import { supabase, isTableMissingError } from './supabase';
 import { Product, Category, InventoryMovement, InventoryMovementType } from '../types';
+import { sanitizeImageUrl } from '../utils/imageUrl';
 
 export async function getProducts(includeInactive = false): Promise<Product[]> {
   let query = supabase
@@ -148,7 +149,7 @@ export async function createProduct(productData: {
     p_stock: Math.floor(Number(productData.stock || 0)),
     p_min_stock: Math.floor(Number(productData.min_stock ?? 5)),
     p_category_id: productData.category_id || null,
-    p_image_url: productData.image_url?.trim() || null,
+    p_image_url: sanitizeImageUrl(productData.image_url) || null,
     p_is_active: productData.is_active ?? true,
     p_is_featured: productData.is_featured ?? false,
     p_barcode: cleanBarcode,
@@ -167,7 +168,7 @@ export async function createProduct(productData: {
       p_stock: Math.floor(Number(productData.stock || 0)),
       p_min_stock: Math.floor(Number(productData.min_stock ?? 5)),
       p_category_id: productData.category_id || null,
-      p_image_url: productData.image_url?.trim() || null,
+      p_image_url: sanitizeImageUrl(productData.image_url) || null,
       p_is_active: productData.is_active ?? true,
       p_is_featured: productData.is_featured ?? false,
     });
@@ -237,7 +238,7 @@ export async function updateProduct(
     payload.category_id = productData.category_id || null;
   }
   if (productData.image_url !== undefined) {
-    payload.image_url = productData.image_url || null;
+    payload.image_url = sanitizeImageUrl(productData.image_url) || null;
   }
   if (productData.is_active !== undefined) {
     payload.is_active = productData.is_active;

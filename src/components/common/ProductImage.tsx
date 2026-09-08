@@ -1,5 +1,9 @@
-import React, { useState, useEffect } from 'react';
-import { Package, ImageOff } from 'lucide-react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Package } from 'lucide-react';
+import { sanitizeImageUrl, getImageCandidates, detectImageService } from '../../utils/imageUrl';
+
+export { sanitizeImageUrl, getImageCandidates, detectImageService };
+export type { ImageServiceInfo } from '../../utils/imageUrl';
 
 interface ProductImageProps {
   src?: string | null;
@@ -13,42 +17,6 @@ interface ProductImageProps {
   onClick?: (e: React.MouseEvent) => void;
 }
 
-/**
- * Normaliza y limpia URLs de imágenes de productos.
- * Corrige enlaces comunes como Unsplash sin parámetros, enlaces de Google Images o espacios en blanco.
- */
-export function sanitizeImageUrl(url?: string | null): string | null {
-  if (!url) return null;
-  const trimmed = url.trim();
-  if (!trimmed) return null;
-
-  // Si es un data URL base64, dejarlo intacto
-  if (trimmed.startsWith('data:image/')) {
-    return trimmed;
-  }
-
-  // Si alguien copió el enlace de redirección de Google Images (google.com/imgres?imgurl=...)
-  if (trimmed.includes('google.') && trimmed.includes('imgurl=')) {
-    try {
-      const urlObj = new URL(trimmed);
-      const realImgUrl = urlObj.searchParams.get('imgurl');
-      if (realImgUrl) {
-        return decodeURIComponent(realImgUrl);
-      }
-    } catch {
-      // Ignorar error de parsing
-    }
-  }
-
-  // Si es de Unsplash y le faltan parámetros de optimización
-  if (trimmed.includes('images.unsplash.com') && !trimmed.includes('auto=format')) {
-    const separator = trimmed.includes('?') ? '&' : '?';
-    return `${trimmed}${separator}auto=format&fit=crop&w=600&q=80`;
-  }
-
-  return trimmed;
-}
-
 export const ProductImage: React.FC<ProductImageProps> = ({
   src,
   alt,
@@ -60,21 +28,35 @@ export const ProductImage: React.FC<ProductImageProps> = ({
   referrerPolicy = 'no-referrer',
   onClick,
 }) => {
+  const candidates = useMemo(() => getImageCandidates(src), [src]);
+  const [candidateIndex, setCandidateIndex] = useState(0);
   const [hasError, setHasError] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
-  const cleanUrl = sanitizeImageUrl(src);
-
-  // Reiniciar estado si cambia el src
+  // Reiniciar estado cada vez que cambien los candidatos
   useEffect(() => {
-    setHasError(false);
-    setIsLoading(Boolean(cleanUrl));
-  }, [cleanUrl]);
+    setCandidateIndex(0);
+    setHasError(candidates.length === 0);
+    setIsLoading(candidates.length > 0);
+  }, [candidates]);
+
+  const currentUrl = candidates[candidateIndex] || null;
+
+  const handleImageError = () => {
+    // Si aún hay candidatos alternativos (ej: CDN alterno de Drive o proxy de hotlink), probar el siguiente
+    if (candidateIndex + 1 < candidates.length) {
+      setCandidateIndex((prev) => prev + 1);
+      setIsLoading(true);
+    } else {
+      setIsLoading(false);
+      setHasError(true);
+    }
+  };
 
   const aspectClass =
     aspectRatio === 'square' ? 'aspect-square' : aspectRatio === 'video' ? 'aspect-video' : '';
 
-  if (!cleanUrl || hasError) {
+  if (!currentUrl || hasError) {
     return (
       <div
         onClick={onClick}
@@ -109,15 +91,13 @@ export const ProductImage: React.FC<ProductImageProps> = ({
         </div>
       )}
       <img
-        src={cleanUrl}
+        key={currentUrl}
+        src={currentUrl}
         alt={alt}
         loading="lazy"
         referrerPolicy={referrerPolicy}
         onLoad={() => setIsLoading(false)}
-        onError={() => {
-          setIsLoading(false);
-          setHasError(true);
-        }}
+        onError={handleImageError}
         className={`${className} ${isLoading ? 'opacity-0' : 'opacity-100'} transition-opacity duration-300`}
       />
     </div>
