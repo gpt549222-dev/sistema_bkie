@@ -17,20 +17,22 @@ export async function getOrders(statusFilter?: OrderStatus): Promise<Order[]> {
     throw new Error(`Error al obtener pedidos de Supabase: ${error.message}`);
   }
 
-  return (data || []).map((o: any) => ({
-    ...o,
-    subtotal: Number(o.subtotal) || 0,
-    discount: Number(o.discount) || 0,
-    tax: Number(o.tax) || 0,
-    total: Number(o.total) || 0,
-    items: (o.items || []).map((it: any) => ({
-      ...it,
-      original_unit_price: Number(it.original_unit_price) || 0,
-      unit_price: Number(it.unit_price) || 0,
-      discount_amount: Number(it.discount_amount) || 0,
-      total_price: Number(it.total_price) || 0,
-    })),
-  }));
+  return (data || [])
+    .filter((o: any) => o.is_archived !== true)
+    .map((o: any) => ({
+      ...o,
+      subtotal: Number(o.subtotal) || 0,
+      discount: Number(o.discount) || 0,
+      tax: Number(o.tax) || 0,
+      total: Number(o.total) || 0,
+      items: (o.items || []).map((it: any) => ({
+        ...it,
+        original_unit_price: Number(it.original_unit_price) || 0,
+        unit_price: Number(it.unit_price) || 0,
+        discount_amount: Number(it.discount_amount) || 0,
+        total_price: Number(it.total_price) || 0,
+      })),
+    }));
 }
 
 export async function getOrder(id: string): Promise<Order | null> {
@@ -209,73 +211,36 @@ export async function cancelOrder(
 }
 
 export async function deleteOrder(orderId: string): Promise<void> {
-  // 1. Intentar por RPC atómico
-  try {
-    const { data: rpcData, error: rpcError } = await supabase.rpc('delete_order_atomic', {
-      p_order_id: orderId,
-    });
-    if (!rpcError && rpcData?.success) {
-      return;
-    }
-  } catch {}
+  // Ejecución exclusivamente atómica en PostgreSQL vía RPC para mantener integridad histórica y auditoría
+  const { data: rpcData, error: rpcError } = await supabase.rpc('delete_order_atomic', {
+    p_order_id: orderId,
+  });
 
-  // 2. Fallback seguro en cascada en Supabase
-  await supabase.from('order_items').delete().eq('order_id', orderId);
-  await supabase.from('order_status_history').delete().eq('order_id', orderId);
-  await supabase.from('payments').delete().eq('order_id', orderId);
-  await supabase.from('sales').update({ order_id: null }).eq('order_id', orderId);
-  await supabase.from('invoices').update({ order_id: null }).eq('order_id', orderId);
+  if (rpcError) {
+    throw new Error(rpcError.message || 'Error al eliminar/anular el pedido en el servidor.');
+  }
 
-  const { error } = await supabase.from('orders').delete().eq('id', orderId);
-  if (error) {
-    throw new Error(`Error al eliminar pedido: ${error.message}`);
+  if (!rpcData?.success) {
+    throw new Error(rpcData?.message || 'No se pudo completar la anulación del pedido.');
   }
 }
 
 export async function clearOrders(
   mode: 'all' | 'cancelled' | 'delivered' = 'cancelled'
 ): Promise<number> {
-  // 1. Intentar RPC atómico
-  try {
-    const { data: rpcData, error: rpcError } = await supabase.rpc('clear_orders_atomic', {
-      p_mode: mode,
-    });
-    if (!rpcError && typeof rpcData?.deleted_count === 'number') {
-      return rpcData.deleted_count;
-    }
-  } catch {}
+  // Depuración atómica exclusiva en PostgreSQL vía RPC
+  const { data: rpcData, error: rpcError } = await supabase.rpc('clear_orders_atomic', {
+    p_mode: mode,
+  });
 
-  // 2. Fallback seguro en Supabase
-  let query = supabase.from('orders').select('id');
-  if (mode === 'cancelled') {
-    query = query.eq('status', 'cancelled');
-  } else if (mode === 'delivered') {
-    query = query.eq('status', 'delivered');
+  if (rpcError) {
+    throw new Error(rpcError.message || 'Error al depurar pedidos en el servidor.');
   }
 
-  const { data: targetOrders, error: fetchErr } = await query;
-  if (fetchErr) {
-    throw new Error(`Error al consultar pedidos para limpiar: ${fetchErr.message}`);
+  if (!rpcData?.success || typeof rpcData?.deleted_count !== 'number') {
+    throw new Error(rpcData?.message || 'No se pudo completar la depuración de pedidos.');
   }
 
-  if (!targetOrders || targetOrders.length === 0) {
-    return 0;
-  }
-
-  const orderIds = targetOrders.map((o: any) => o.id);
-
-  // Eliminar referencias hijas
-  await supabase.from('order_items').delete().in('order_id', orderIds);
-  await supabase.from('order_status_history').delete().in('order_id', orderIds);
-  await supabase.from('payments').delete().in('order_id', orderIds);
-  await supabase.from('sales').update({ order_id: null }).in('order_id', orderIds);
-  await supabase.from('invoices').update({ order_id: null }).in('order_id', orderIds);
-
-  const { error: delErr } = await supabase.from('orders').delete().in('id', orderIds);
-  if (delErr) {
-    throw new Error(`Error al eliminar pedidos seleccionados: ${delErr.message}`);
-  }
-
-  return orderIds.length;
+  return rpcData.deleted_count;
 }
 

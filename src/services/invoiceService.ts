@@ -17,20 +17,22 @@ export async function getInvoices(statusFilter?: InvoiceStatus): Promise<Invoice
     throw new Error(`Error al obtener facturas de Supabase: ${error.message}`);
   }
 
-  return (data || []).map((inv: any) => ({
-    ...inv,
-    subtotal: Number(inv.subtotal) || 0,
-    discount: Number(inv.discount) || 0,
-    tax: Number(inv.tax) || 0,
-    total: Number(inv.total) || 0,
-    items: (inv.items || []).map((it: any) => ({
-      ...it,
-      original_unit_price: Number(it.original_unit_price) || 0,
-      unit_price: Number(it.unit_price) || 0,
-      discount_amount: Number(it.discount_amount) || 0,
-      total: Number(it.total) || 0,
-    })),
-  }));
+  return (data || [])
+    .filter((inv: any) => inv.is_archived !== true)
+    .map((inv: any) => ({
+      ...inv,
+      subtotal: Number(inv.subtotal) || 0,
+      discount: Number(inv.discount) || 0,
+      tax: Number(inv.tax) || 0,
+      total: Number(inv.total) || 0,
+      items: (inv.items || []).map((it: any) => ({
+        ...it,
+        original_unit_price: Number(it.original_unit_price) || 0,
+        unit_price: Number(it.unit_price) || 0,
+        discount_amount: Number(it.discount_amount) || 0,
+        total: Number(it.total) || 0,
+      })),
+    }));
 }
 
 export async function getInvoice(id: string): Promise<Invoice | null> {
@@ -201,66 +203,37 @@ export async function cancelInvoice(
 }
 
 export async function deleteInvoice(invoiceId: string): Promise<boolean> {
-  // 1. Intentar por RPC atómico
-  try {
-    const { data: rpcData, error: rpcError } = await supabase.rpc('delete_invoice_atomic', {
-      p_invoice_id: invoiceId,
-    });
-    if (!rpcError && rpcData?.success) {
-      return true;
-    }
-  } catch {}
+  // Anulación y archivado exclusivamente atómico en PostgreSQL vía RPC para mantener integridad fiscal y contable
+  const { data: rpcData, error: rpcError } = await supabase.rpc('delete_invoice_atomic', {
+    p_invoice_id: invoiceId,
+  });
 
-  // 2. Fallback seguro en cascada en Supabase:
-  // Primero desvincular o eliminar hijos
-  await supabase.from('invoice_items').delete().eq('invoice_id', invoiceId);
-  await supabase.from('sales').update({ invoice_id: null }).eq('invoice_id', invoiceId);
+  if (rpcError) {
+    throw new Error(rpcError.message || 'Error al anular/archivar la factura en el servidor.');
+  }
 
-  const { error: delErr } = await supabase.from('invoices').delete().eq('id', invoiceId);
-  if (delErr) {
-    throw new Error(`Error al borrar factura de la base de datos: ${delErr.message}`);
+  if (!rpcData?.success) {
+    throw new Error(rpcData?.message || 'No se pudo completar la anulación de la factura.');
   }
 
   return true;
 }
 
 export async function clearInvoices(mode: 'all' | 'cancelled' = 'cancelled'): Promise<number> {
-  // 1. Intentar RPC si existe
-  try {
-    const { data: rpcData, error: rpcError } = await supabase.rpc('clear_invoices_atomic', {
-      p_mode: mode,
-    });
-    if (!rpcError && typeof rpcData?.deleted_count === 'number') {
-      return rpcData.deleted_count;
-    }
-  } catch {}
+  // Depuración/archivado atómico exclusivo en PostgreSQL vía RPC
+  const { data: rpcData, error: rpcError } = await supabase.rpc('clear_invoices_atomic', {
+    p_mode: mode,
+  });
 
-  // 2. Fallback directo
-  let query = supabase.from('invoices').select('id');
-  if (mode === 'cancelled') {
-    query = query.eq('status', 'cancelled');
+  if (rpcError) {
+    throw new Error(rpcError.message || 'Error al depurar facturas en el servidor.');
   }
 
-  const { data: targetInvoices, error: fetchErr } = await query;
-  if (fetchErr) {
-    throw new Error(`Error al consultar facturas para limpiar: ${fetchErr.message}`);
+  if (!rpcData?.success || typeof rpcData?.deleted_count !== 'number') {
+    throw new Error(rpcData?.message || 'No se pudo completar la depuración de facturas.');
   }
 
-  if (!targetInvoices || targetInvoices.length === 0) {
-    return 0;
-  }
-
-  const invIds = targetInvoices.map((inv: any) => inv.id);
-
-  await supabase.from('invoice_items').delete().in('invoice_id', invIds);
-  await supabase.from('sales').update({ invoice_id: null }).in('invoice_id', invIds);
-
-  const { error: delErr } = await supabase.from('invoices').delete().in('id', invIds);
-  if (delErr) {
-    throw new Error(`Error al borrar facturas: ${delErr.message}`);
-  }
-
-  return invIds.length;
+  return rpcData.deleted_count;
 }
 
 export async function processDirectPosSale(payload: {

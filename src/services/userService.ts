@@ -118,23 +118,19 @@ export async function createSystemUser(data: CreateUserData): Promise<void> {
 }
 
 /**
- * Eliminar un usuario del sistema
+ * Eliminar un usuario del sistema (operación atómica protegida)
  */
 export async function deleteSystemUser(userId: string): Promise<void> {
-  // 1. Intentar RPC
-  try {
-    const { data: rpcData, error: rpcError } = await supabase.rpc('delete_system_user', {
-      p_user_id: userId,
-    });
-    if (!rpcError && rpcData?.success) {
-      return;
-    }
-  } catch {}
+  const { data: rpcData, error: rpcError } = await supabase.rpc('delete_system_user', {
+    p_user_id: userId,
+  });
 
-  // 2. Fallback eliminando su perfil
-  const { error } = await supabase.from('profiles').delete().eq('id', userId);
-  if (error) {
-    throw new Error(`Error al eliminar usuario: ${error.message}`);
+  if (rpcError) {
+    throw new Error(rpcError.message || 'Error al eliminar usuario mediante RPC.');
+  }
+
+  if (!rpcData?.success) {
+    throw new Error(rpcData?.message || 'No se pudo eliminar el usuario.');
   }
 }
 

@@ -1,51 +1,30 @@
 import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
-import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
+import { processScanListRequest, setSecureCorsHeaders } from './api/_geminiService';
 
 dotenv.config();
-
-let geminiClient: GoogleGenAI | null = null;
-
-function getGemini(): GoogleGenAI | null {
-  const key =
-    process.env.GEMINI_API_KEY ||
-    process.env.GOOGLE_GENAI_API_KEY;
-  if (!key) {
-    return null;
-  }
-  if (!geminiClient) {
-    geminiClient = new GoogleGenAI({ apiKey: key });
-  }
-  return geminiClient;
-}
 
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  // CORS middleware for API endpoints
+  // Middleware de CORS seguro para endpoints de /api
   app.use('/api', (req, res, next) => {
-    const origin = req.headers.origin || '*';
-    res.setHeader('Access-Control-Allow-Origin', origin);
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    setSecureCorsHeaders(req.headers as Record<string, unknown>, (k, v) => res.setHeader(k, v));
     if (req.method === 'OPTIONS') {
       return res.sendStatus(204);
     }
     next();
   });
 
-  // JSON Body Parser with high limit for images
-  app.use(express.json({ limit: '15mb' }));
+  // JSON Body Parser con límite seguro para imágenes base64
+  app.use(express.json({ limit: '10mb' }));
 
   // API Health Check
   app.get('/api/health', (req, res) => {
-    const hasGemini = Boolean(
-      process.env.GEMINI_API_KEY ||
-      process.env.GOOGLE_GENAI_API_KEY
-    );
+    const hasGemini = Boolean(process.env.GEMINI_API_KEY);
     const hasSupabase = Boolean(
       process.env.VITE_SUPABASE_URL ||
       process.env.SUPABASE_URL ||
@@ -60,91 +39,15 @@ async function startServer() {
     });
   });
 
-  // API Route: AI Scan Stationery List
+  // API Route: AI Scan Stationery List delegada al servicio reutilizable
   app.post('/api/scan-list', async (req, res) => {
-    const { image, prompt } = req.body || {};
-    try {
-      const ai = getGemini();
+    const clientIp =
+      (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ||
+      req.socket.remoteAddress ||
+      '127.0.0.1';
 
-      if (!ai) {
-        return res.status(503).json({
-          success: false,
-          error: 'El servicio de IA de Gemini no está configurado en el servidor. Configure GEMINI_API_KEY en las variables de entorno.',
-          items: [],
-        });
-      }
-
-      const systemPrompt = `Eres un asistente inteligente para la tienda "BIKIE Papelería".
-Tu tarea es analizar la foto de la lista escolar o lista de útiles de oficina (o texto proporcionado) y extraer todos los artículos con sus cantidades correspondientes.
-Devuelve SIEMPRE y ÚNICAMENTE un objeto JSON válido con la siguiente estructura:
-{
-  "items": [
-    {
-      "item_name": "Nombre claro del artículo en español (ej: Cuaderno espiral 100 hojas)",
-      "quantity": 2,
-      "notes": "detalles opcionales como color o tamaño"
-    }
-  ]
-}`;
-
-      let contents: any[] = [];
-
-      if (image && typeof image === 'string') {
-        const base64Data = image.replace(/^data:image\/\w+;base64,/, '');
-        const mimeMatch = image.match(/^data:(image\/\w+);base64,/);
-        const mimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
-
-        contents = [
-          {
-            role: 'user',
-            parts: [
-              { text: prompt ? `${systemPrompt}\n\nInstrucción adicional: ${prompt}` : systemPrompt },
-              {
-                inlineData: {
-                  mimeType: mimeType,
-                  data: base64Data,
-                },
-              },
-            ],
-          },
-        ];
-      } else {
-        contents = [
-          {
-            role: 'user',
-            parts: [
-              {
-                text: `${systemPrompt}\n\nLista de texto proporcionada por el cliente:\n${prompt || 'Cuadernos, lápices y resma de papel'}`,
-              },
-            ],
-          },
-        ];
-      }
-
-      const response = await ai.models.generateContent({
-        model: 'gemini-flash-latest',
-        contents,
-        config: {
-          responseMimeType: 'application/json',
-        },
-      });
-
-      const responseText = response.text?.trim() || '{}';
-      const parsed = JSON.parse(responseText);
-
-      return res.json({
-        success: true,
-        source: 'gemini_vision',
-        items: Array.isArray(parsed.items) ? parsed.items : [],
-      });
-    } catch (err: any) {
-      console.error('Error in /api/scan-list:', err);
-      return res.status(500).json({
-        success: false,
-        error: err.message || 'Error al procesar la lista con la IA de Gemini.',
-        items: [],
-      });
-    }
+    const result = await processScanListRequest(req.body, clientIp);
+    return res.status(result.status).json(result.body);
   });
 
   // Vite middleware in dev or static serving in prod

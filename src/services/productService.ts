@@ -179,77 +179,13 @@ export async function createProduct(productData: {
     }
   }
 
-  // 2. Si el RPC falló (por ejemplo, si no existe la función en Supabase), usar inserción directa resiliente
+  // Si el RPC falló, lanzar error informativo y no realizar inserciones directas sin control atómico
   if (rpcError) {
-    console.warn('[productService] create_product_atomic notice, applying direct resilient insert:', rpcError.message);
-    if (rpcError.code === '23505' || rpcError.message?.includes('Ya existe un producto')) {
-      throw new Error(`Ya existe un producto con el código "${cleanCode}".`);
+    console.error('[productService] Error en RPC create_product_atomic:', rpcError);
+    if (rpcError.code === '23505' || rpcError.message?.includes('Ya existe un producto') || rpcError.message?.includes('código')) {
+      throw new Error(`Ya existe un producto con el código o código de barras "${cleanCode}".`);
     }
-
-    try {
-      // Intento 1: con barcode
-      let insertResult = await supabase
-        .from('products')
-        .insert({
-          code: cleanCode,
-          barcode: cleanBarcode,
-          name: (productData.name || '').trim(),
-          description: productData.description?.trim() || null,
-          price: Number(productData.price),
-          cost_price: Number(productData.cost_price || 0),
-          stock: Math.floor(Number(productData.stock || 0)),
-          min_stock: Math.floor(Number(productData.min_stock ?? 5)),
-          category_id: productData.category_id || null,
-          image_url: productData.image_url?.trim() || null,
-          is_active: productData.is_active ?? true,
-          is_featured: productData.is_featured ?? false,
-        })
-        .select()
-        .single();
-
-      // Si falla porque no existe la columna barcode, reintentar sin barcode
-      if (insertResult.error && insertResult.error.message?.includes('column "barcode"')) {
-        insertResult = await supabase
-          .from('products')
-          .insert({
-            code: cleanCode,
-            name: (productData.name || '').trim(),
-            description: productData.description?.trim() || null,
-            price: Number(productData.price),
-            cost_price: Number(productData.cost_price || 0),
-            stock: Math.floor(Number(productData.stock || 0)),
-            min_stock: Math.floor(Number(productData.min_stock ?? 5)),
-            category_id: productData.category_id || null,
-            image_url: productData.image_url?.trim() || null,
-            is_active: productData.is_active ?? true,
-            is_featured: productData.is_featured ?? false,
-          })
-          .select()
-          .single();
-      }
-
-      if (insertResult.error || !insertResult.data) {
-        throw new Error(insertResult.error?.message || 'Error al insertar producto directamente.');
-      }
-
-      rpcProduct = insertResult.data;
-
-      // Registrar movimiento de inventario inicial si hay stock
-      if (productData.stock > 0) {
-        try {
-          await supabase.from('inventory_movements').insert({
-            product_id: rpcProduct.id,
-            type: 'purchase',
-            quantity: Math.floor(Number(productData.stock)),
-            previous_stock: 0,
-            new_stock: Math.floor(Number(productData.stock)),
-            note: 'Inventario inicial al registrar producto',
-          });
-        } catch {}
-      }
-    } catch (fallbackErr: any) {
-      throw new Error(`Error al crear producto: ${fallbackErr.message || rpcError.message}`);
-    }
+    throw new Error(rpcError.message || 'Error al crear producto en la base de datos.');
   }
 
   if (!rpcProduct || !rpcProduct.id) {

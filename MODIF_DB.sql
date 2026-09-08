@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS public.categories (
 CREATE TABLE IF NOT EXISTS public.products (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     code TEXT NOT NULL UNIQUE,
+    barcode TEXT,
     name TEXT NOT NULL,
     description TEXT,
     price NUMERIC(14,2) NOT NULL CHECK (price >= 0),
@@ -405,7 +406,22 @@ CREATE TABLE IF NOT EXISTS public.purchase_items (
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
 );
 
--- 3.23 CASH_REGISTERS (Control de Turnos de Caja y Arqueo)
+-- 3.23 CASH_SHIFTS (Control de Turnos de Caja y Arqueo)
+CREATE TABLE IF NOT EXISTS public.cash_shifts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    opened_by TEXT NOT NULL DEFAULT 'Cajero BIKIE',
+    opened_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
+    closed_at TIMESTAMPTZ,
+    initial_amount NUMERIC(14,2) NOT NULL DEFAULT 0 CHECK (initial_amount >= 0),
+    final_amount NUMERIC(14,2),
+    total_sales NUMERIC(14,2) NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'closed')),
+    notes TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
+);
+
+-- 3.23b CASH_REGISTERS (Compatibilidad de Terminales de Caja)
 CREATE TABLE IF NOT EXISTS public.cash_registers (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name TEXT NOT NULL DEFAULT 'Caja Principal',
@@ -427,7 +443,8 @@ CREATE TABLE IF NOT EXISTS public.cash_registers (
 -- 3.24 CASH_MOVEMENTS (Entradas y Salidas de Efectivo en Caja)
 CREATE TABLE IF NOT EXISTS public.cash_movements (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    cash_register_id UUID REFERENCES public.cash_registers(id) ON DELETE CASCADE,
+    cash_register_id UUID,
+    cash_shift_id UUID REFERENCES public.cash_shifts(id) ON DELETE CASCADE,
     type TEXT NOT NULL CHECK (type IN ('deposit', 'withdrawal')),
     amount NUMERIC(14,2) NOT NULL CHECK (amount > 0),
     description TEXT NOT NULL,
@@ -436,8 +453,17 @@ CREATE TABLE IF NOT EXISTS public.cash_movements (
 );
 
 -- ==============================================================================
--- 4. ÍNDICES DE RENDIMIENTO
+-- 4. COLUMNAS ADICIONALES E ÍNDICES DE RENDIMIENTO
 -- ==============================================================================
+-- 4.1 Garantizar columnas críticas en tablas existentes
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS barcode TEXT;
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS is_archived BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE public.invoices ADD COLUMN IF NOT EXISTS is_archived BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE public.purchases ADD COLUMN IF NOT EXISTS is_archived BOOLEAN NOT NULL DEFAULT false;
+
+-- 4.2 Índices de búsqueda y restricciones únicas
+CREATE UNIQUE INDEX IF NOT EXISTS idx_products_barcode_unique ON public.products(barcode) WHERE barcode IS NOT NULL AND barcode <> '';
+CREATE INDEX IF NOT EXISTS idx_products_barcode ON public.products(barcode);
 CREATE INDEX IF NOT EXISTS idx_products_category ON public.products(category_id);
 CREATE INDEX IF NOT EXISTS idx_products_code ON public.products(code);
 CREATE INDEX IF NOT EXISTS idx_products_is_active ON public.products(is_active);
@@ -445,9 +471,11 @@ CREATE INDEX IF NOT EXISTS idx_orders_order_number ON public.orders(order_number
 CREATE INDEX IF NOT EXISTS idx_orders_user_id ON public.orders(user_id);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON public.orders(status);
 CREATE INDEX IF NOT EXISTS idx_orders_client_request_id ON public.orders(client_request_id);
+CREATE INDEX IF NOT EXISTS idx_orders_is_archived ON public.orders(is_archived);
 CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON public.order_items(order_id);
 CREATE INDEX IF NOT EXISTS idx_invoices_order_id ON public.invoices(order_id);
 CREATE INDEX IF NOT EXISTS idx_invoices_number ON public.invoices(invoice_number);
+CREATE INDEX IF NOT EXISTS idx_invoices_is_archived ON public.invoices(is_archived);
 CREATE INDEX IF NOT EXISTS idx_services_category ON public.services(category);
 CREATE INDEX IF NOT EXISTS idx_services_is_active ON public.services(is_active);
 CREATE INDEX IF NOT EXISTS idx_suppliers_category ON public.suppliers(category);
@@ -460,6 +488,7 @@ CREATE INDEX IF NOT EXISTS idx_pos_scanner_short_code ON public.pos_scanner_sess
 CREATE INDEX IF NOT EXISTS idx_pos_scanner_status ON public.pos_scanner_sessions(status);
 CREATE INDEX IF NOT EXISTS idx_pos_scanner_expires_at ON public.pos_scanner_sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_purchases_supplier_id ON public.purchases(supplier_id);
+CREATE INDEX IF NOT EXISTS idx_purchases_is_archived ON public.purchases(is_archived);
 CREATE INDEX IF NOT EXISTS idx_purchase_items_purchase_id ON public.purchase_items(purchase_id);
 CREATE INDEX IF NOT EXISTS idx_cash_registers_status ON public.cash_registers(status);
 CREATE INDEX IF NOT EXISTS idx_cash_movements_shift ON public.cash_movements(cash_register_id);
@@ -468,12 +497,42 @@ CREATE INDEX IF NOT EXISTS idx_cash_movements_shift ON public.cash_movements(cas
 -- 5. AUTENTICACIÓN, ROLES Y PROTECCIÓN CONTRA ESCALADO DE PRIVILEGIOS
 -- ==============================================================================
 
--- 5.1 Función para comprobar si el usuario actual es admin o personal de caja (staff)
+-- 5.1 Funciones de comprobación de roles
+-- is_admin: EXCLUSIVAMENTE rol 'admin' (nunca cashier)
 CREATE OR REPLACE FUNCTION public.is_admin()
 RETURNS BOOLEAN
 LANGUAGE sql
 SECURITY DEFINER
 STABLE
+SET search_path = public
+AS $$
+    SELECT EXISTS (
+        SELECT 1 FROM public.profiles
+        WHERE id = auth.uid() AND role = 'admin'
+    );
+$$;
+
+-- is_cashier: Rol 'cashier'
+CREATE OR REPLACE FUNCTION public.is_cashier()
+RETURNS BOOLEAN
+LANGUAGE sql
+SECURITY DEFINER
+STABLE
+SET search_path = public
+AS $$
+    SELECT EXISTS (
+        SELECT 1 FROM public.profiles
+        WHERE id = auth.uid() AND role = 'cashier'
+    );
+$$;
+
+-- is_staff: Rol 'admin' o 'cashier' (personal operativo de tienda)
+CREATE OR REPLACE FUNCTION public.is_staff()
+RETURNS BOOLEAN
+LANGUAGE sql
+SECURITY DEFINER
+STABLE
+SET search_path = public
 AS $$
     SELECT EXISTS (
         SELECT 1 FROM public.profiles
@@ -486,6 +545,7 @@ CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public
 AS $$
 BEGIN
     INSERT INTO public.profiles (id, full_name, role, phone)
@@ -505,16 +565,28 @@ CREATE TRIGGER on_auth_user_created
     AFTER INSERT ON auth.users
     FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
 
--- 5.3 Trigger en profiles: Bloquea a cualquier usuario no-admin cambiar roles
+-- 5.3 Trigger en profiles: Bloquea cambio de roles si no es admin y protege al último administrador
 CREATE OR REPLACE FUNCTION public.protect_profile_role()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public
 AS $$
+DECLARE
+    v_admin_count INT;
 BEGIN
     IF (OLD.role IS DISTINCT FROM NEW.role) THEN
+        -- Solo un administrador con rol 'admin' puede modificar roles
         IF NOT public.is_admin() THEN
-            RAISE EXCEPTION 'Operación denegada: Solo un administrador autorizado puede modificar roles.';
+            RAISE EXCEPTION 'Operación denegada: Solo un administrador autorizado puede modificar roles de usuario.';
+        END IF;
+
+        -- Protección al último administrador: no puede ser degradado
+        IF OLD.role = 'admin' AND NEW.role <> 'admin' THEN
+            SELECT count(*) INTO v_admin_count FROM public.profiles WHERE role = 'admin';
+            IF v_admin_count <= 1 THEN
+                RAISE EXCEPTION 'Operación bloqueada: No se puede degradar al único administrador del sistema.';
+            END IF;
         END IF;
     END IF;
     NEW.updated_at = timezone('utc'::text, now());
@@ -529,10 +601,10 @@ CREATE TRIGGER trg_protect_profile_role
 
 -- 5.4 Procedimiento administrativo para designar administrador inicial
 DROP PROCEDURE IF EXISTS public.promote_user_to_admin(TEXT);
-DROP PROCEDURE IF EXISTS public.promote_user_to_admin;
 CREATE OR REPLACE PROCEDURE public.promote_user_to_admin(p_email TEXT)
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
     v_user_id UUID;
@@ -637,70 +709,83 @@ CREATE POLICY "Customers readable by self or admin" ON public.customers
 CREATE POLICY "Customers insertable by all" ON public.customers FOR INSERT WITH CHECK (true);
 CREATE POLICY "Admin full access to customers" ON public.customers FOR ALL USING (public.is_admin()) WITH CHECK (public.is_admin());
 
--- Pedidos (Orders): Propietario o Admin pueden leer; inserción restringida a Admin o RPCs SECURITY DEFINER
+-- Pedidos (Orders): Propietario o Personal Staff pueden leer; gestión exclusiva staff
 DROP POLICY IF EXISTS "Orders readable by owner or admin" ON public.orders;
+DROP POLICY IF EXISTS "Orders readable by owner or staff" ON public.orders;
 DROP POLICY IF EXISTS "Anyone can insert orders" ON public.orders;
 DROP POLICY IF EXISTS "Admin can update orders" ON public.orders;
 DROP POLICY IF EXISTS "Admin can delete orders" ON public.orders;
 DROP POLICY IF EXISTS "Admin full access to orders" ON public.orders;
-CREATE POLICY "Orders readable by owner or admin" ON public.orders
-    FOR SELECT USING (auth.uid() = user_id OR public.is_admin());
-CREATE POLICY "Admin full access to orders" ON public.orders
-    FOR ALL USING (public.is_admin()) WITH CHECK (public.is_admin());
+DROP POLICY IF EXISTS "Staff full access to orders" ON public.orders;
+CREATE POLICY "Orders readable by owner or staff" ON public.orders
+    FOR SELECT USING (auth.uid() = user_id OR public.is_staff());
+CREATE POLICY "Staff full access to orders" ON public.orders
+    FOR ALL USING (public.is_staff()) WITH CHECK (public.is_staff());
 
--- Order Items: Lectura propietario o admin; inserción exclusiva admin o RPCs SECURITY DEFINER
+-- Order Items: Lectura propietario o staff; gestión exclusiva staff
 DROP POLICY IF EXISTS "Order items readable by owner or admin" ON public.order_items;
+DROP POLICY IF EXISTS "Order items readable by owner or staff" ON public.order_items;
 DROP POLICY IF EXISTS "Anyone can insert order items" ON public.order_items;
 DROP POLICY IF EXISTS "Admin full access to order items" ON public.order_items;
-CREATE POLICY "Order items readable by owner or admin" ON public.order_items
+DROP POLICY IF EXISTS "Staff full access to order items" ON public.order_items;
+CREATE POLICY "Order items readable by owner or staff" ON public.order_items
     FOR SELECT USING (
-        public.is_admin() OR
+        public.is_staff() OR
         EXISTS (SELECT 1 FROM public.orders o WHERE o.id = order_id AND o.user_id = auth.uid())
     );
-CREATE POLICY "Admin full access to order items" ON public.order_items
-    FOR ALL USING (public.is_admin()) WITH CHECK (public.is_admin());
+CREATE POLICY "Staff full access to order items" ON public.order_items
+    FOR ALL USING (public.is_staff()) WITH CHECK (public.is_staff());
 
--- Historial de pedidos: Lectura propietario o admin; inserción exclusiva admin o RPCs SECURITY DEFINER
+-- Historial de pedidos: Lectura propietario o staff; gestión exclusiva staff
 DROP POLICY IF EXISTS "Order history readable by owner or admin" ON public.order_status_history;
+DROP POLICY IF EXISTS "Order history readable by owner or staff" ON public.order_status_history;
 DROP POLICY IF EXISTS "Anyone can insert order history" ON public.order_status_history;
 DROP POLICY IF EXISTS "Admin full access to order history" ON public.order_status_history;
-CREATE POLICY "Order history readable by owner or admin" ON public.order_status_history
+DROP POLICY IF EXISTS "Staff full access to order history" ON public.order_status_history;
+CREATE POLICY "Order history readable by owner or staff" ON public.order_status_history
     FOR SELECT USING (
-        public.is_admin() OR
+        public.is_staff() OR
         EXISTS (SELECT 1 FROM public.orders o WHERE o.id = order_id AND o.user_id = auth.uid())
     );
-CREATE POLICY "Admin full access to order history" ON public.order_status_history
-    FOR ALL USING (public.is_admin()) WITH CHECK (public.is_admin());
+CREATE POLICY "Staff full access to order history" ON public.order_status_history
+    FOR ALL USING (public.is_staff()) WITH CHECK (public.is_staff());
 
--- Pagos: Inserción y modificación estrictamente restringidas a Admin y RPCs atómicos autorizados
+-- Pagos: Lectura propietario o staff; gestión exclusiva staff
 DROP POLICY IF EXISTS "Payments readable by owner or admin" ON public.payments;
+DROP POLICY IF EXISTS "Payments readable by owner or staff" ON public.payments;
 DROP POLICY IF EXISTS "Anyone can insert payments" ON public.payments;
 DROP POLICY IF EXISTS "Admin full access to payments" ON public.payments;
-CREATE POLICY "Payments readable by owner or admin" ON public.payments
+DROP POLICY IF EXISTS "Staff full access to payments" ON public.payments;
+CREATE POLICY "Payments readable by owner or staff" ON public.payments
     FOR SELECT USING (
-        public.is_admin() OR
+        public.is_staff() OR
         EXISTS (SELECT 1 FROM public.orders o WHERE o.id = order_id AND o.user_id = auth.uid())
     );
-CREATE POLICY "Admin full access to payments" ON public.payments
-    FOR ALL USING (public.is_admin()) WITH CHECK (public.is_admin());
+CREATE POLICY "Staff full access to payments" ON public.payments
+    FOR ALL USING (public.is_staff()) WITH CHECK (public.is_staff());
 
--- Facturas
+-- Facturas: Lectura propietario o staff; gestión exclusiva staff
 DROP POLICY IF EXISTS "Invoices readable by owner or admin" ON public.invoices;
+DROP POLICY IF EXISTS "Invoices readable by owner or staff" ON public.invoices;
 DROP POLICY IF EXISTS "Admin full access to invoices" ON public.invoices;
-CREATE POLICY "Invoices readable by owner or admin" ON public.invoices
+DROP POLICY IF EXISTS "Staff full access to invoices" ON public.invoices;
+CREATE POLICY "Invoices readable by owner or staff" ON public.invoices
     FOR SELECT USING (
-        public.is_admin() OR
+        public.is_staff() OR
         auth.uid() = customer_id OR
         EXISTS (SELECT 1 FROM public.orders o WHERE o.id = order_id AND o.user_id = auth.uid())
     );
-CREATE POLICY "Admin full access to invoices" ON public.invoices FOR ALL USING (public.is_admin()) WITH CHECK (public.is_admin());
+CREATE POLICY "Staff full access to invoices" ON public.invoices 
+    FOR ALL USING (public.is_staff()) WITH CHECK (public.is_staff());
 
 -- Items de Factura
 DROP POLICY IF EXISTS "Invoice items readable by owner or admin" ON public.invoice_items;
+DROP POLICY IF EXISTS "Invoice items readable by owner or staff" ON public.invoice_items;
 DROP POLICY IF EXISTS "Admin full access to invoice items" ON public.invoice_items;
-CREATE POLICY "Invoice items readable by owner or admin" ON public.invoice_items
+DROP POLICY IF EXISTS "Staff full access to invoice items" ON public.invoice_items;
+CREATE POLICY "Invoice items readable by owner or staff" ON public.invoice_items
     FOR SELECT USING (
-        public.is_admin() OR
+        public.is_staff() OR
         EXISTS (
             SELECT 1 FROM public.invoices i
             WHERE i.id = invoice_id AND (
@@ -709,14 +794,29 @@ CREATE POLICY "Invoice items readable by owner or admin" ON public.invoice_items
             )
         )
     );
-CREATE POLICY "Admin full access to invoice items" ON public.invoice_items FOR ALL USING (public.is_admin()) WITH CHECK (public.is_admin());
+CREATE POLICY "Staff full access to invoice items" ON public.invoice_items 
+    FOR ALL USING (public.is_staff()) WITH CHECK (public.is_staff());
 
--- Movimientos de inventario y Ventas (ESTRICTO ADMIN)
+-- Movimientos de inventario: Lectura para staff, modificación estricta Admin
 DROP POLICY IF EXISTS "Inventory movements admin only" ON public.inventory_movements;
-CREATE POLICY "Inventory movements admin only" ON public.inventory_movements FOR ALL USING (public.is_admin()) WITH CHECK (public.is_admin());
+DROP POLICY IF EXISTS "Inventory movements readable by staff" ON public.inventory_movements;
+DROP POLICY IF EXISTS "Inventory movements full admin" ON public.inventory_movements;
+CREATE POLICY "Inventory movements readable by staff" ON public.inventory_movements 
+    FOR SELECT USING (public.is_staff());
+CREATE POLICY "Inventory movements full admin" ON public.inventory_movements 
+    FOR ALL USING (public.is_admin()) WITH CHECK (public.is_admin());
 
+-- Ventas: Staff puede leer e insertar desde POS; modificación estricta Admin
 DROP POLICY IF EXISTS "Sales admin only" ON public.sales;
-CREATE POLICY "Sales admin only" ON public.sales FOR ALL USING (public.is_admin()) WITH CHECK (public.is_admin());
+DROP POLICY IF EXISTS "Sales readable by staff" ON public.sales;
+DROP POLICY IF EXISTS "Sales insert by staff" ON public.sales;
+DROP POLICY IF EXISTS "Sales full admin" ON public.sales;
+CREATE POLICY "Sales readable by staff" ON public.sales 
+    FOR SELECT USING (public.is_staff());
+CREATE POLICY "Sales insert by staff" ON public.sales 
+    FOR INSERT WITH CHECK (public.is_staff());
+CREATE POLICY "Sales full admin" ON public.sales 
+    FOR ALL USING (public.is_admin()) WITH CHECK (public.is_admin());
 
 -- Notificaciones: Exclusivo Admin (Inserciones de sistema vía RPC SECURITY DEFINER)
 DROP POLICY IF EXISTS "Public read notifications" ON public.notifications;
@@ -729,17 +829,26 @@ DROP POLICY IF EXISTS "Notifications full admin" ON public.notifications;
 CREATE POLICY "Notifications select for admin" ON public.notifications FOR SELECT USING (public.is_admin());
 CREATE POLICY "Notifications full admin" ON public.notifications FOR ALL USING (public.is_admin()) WITH CHECK (public.is_admin());
 
--- Configuración
+-- Configuración: Datos públicos del negocio vs datos privados/financieros
 DROP POLICY IF EXISTS "Public read settings" ON public.settings;
+DROP POLICY IF EXISTS "Public read public settings" ON public.settings;
 DROP POLICY IF EXISTS "Admin update settings" ON public.settings;
-CREATE POLICY "Public read settings" ON public.settings FOR SELECT USING (true);
-CREATE POLICY "Admin update settings" ON public.settings FOR ALL USING (public.is_admin()) WITH CHECK (public.is_admin());
+DROP POLICY IF EXISTS "Admin full access to settings" ON public.settings;
+CREATE POLICY "Public read public settings" ON public.settings 
+    FOR SELECT USING (
+        key IN ('business_info', 'store_info', 'public_config')
+        OR public.is_staff()
+    );
+CREATE POLICY "Admin full access to settings" ON public.settings 
+    FOR ALL USING (public.is_admin()) WITH CHECK (public.is_admin());
 
--- Sesiones de escáner móvil para POS
+-- Sesiones de escáner móvil para POS: Protegida para personal autorizado
 DROP POLICY IF EXISTS "Admin full access to pos scanner sessions" ON public.pos_scanner_sessions;
 DROP POLICY IF EXISTS "Public access to pos scanner sessions" ON public.pos_scanner_sessions;
-CREATE POLICY "Public access to pos scanner sessions" ON public.pos_scanner_sessions 
-    FOR ALL USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "Staff full access to pos scanner sessions" ON public.pos_scanner_sessions;
+CREATE POLICY "Staff full access to pos scanner sessions" ON public.pos_scanner_sessions 
+    FOR ALL USING (public.is_staff() OR created_by = auth.uid()) 
+    WITH CHECK (public.is_staff() OR created_by = auth.uid());
 
 -- Compras a proveedores (Solo administradores)
 DROP POLICY IF EXISTS "Admin full access to purchases" ON public.purchases;
@@ -750,14 +859,14 @@ DROP POLICY IF EXISTS "Admin full access to purchase_items" ON public.purchase_i
 CREATE POLICY "Admin full access to purchase_items" ON public.purchase_items 
     FOR ALL USING (public.is_admin()) WITH CHECK (public.is_admin());
 
--- Turnos y Arqueo de Caja (Personal autenticado: admin y cajeros)
+-- Turnos y Arqueo de Caja (Personal de tienda autenticado: admin y cajeros)
 DROP POLICY IF EXISTS "Staff full access to cash_registers" ON public.cash_registers;
 CREATE POLICY "Staff full access to cash_registers" ON public.cash_registers 
-    FOR ALL USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
+    FOR ALL USING (public.is_staff()) WITH CHECK (public.is_staff());
 
 DROP POLICY IF EXISTS "Staff full access to cash_movements" ON public.cash_movements;
 CREATE POLICY "Staff full access to cash_movements" ON public.cash_movements 
-    FOR ALL USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
+    FOR ALL USING (public.is_staff()) WITH CHECK (public.is_staff());
 
 -- ==============================================================================
 -- 7. PROCEDIMIENTOS Y FUNCIONES ATÓMICAS (CONCURRENCY SAFE CON FOR UPDATE)
@@ -765,11 +874,11 @@ CREATE POLICY "Staff full access to cash_movements" ON public.cash_movements
 
 -- 7.1 RASTREO PÚBLICO SEGURO DE PEDIDOS POR NÚMERO (DATOS PRIVADOS PROTEGIDOS)
 DROP FUNCTION IF EXISTS public.track_order(TEXT) CASCADE;
-DROP FUNCTION IF EXISTS public.track_order CASCADE;
 CREATE OR REPLACE FUNCTION public.track_order(p_order_number TEXT)
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
     v_order RECORD;
@@ -832,11 +941,11 @@ $$;
 
 -- 7.2 CONSULTA PÚBLICA SEGURA DE FACTURA POR PEDIDO (DATOS PERSONALES PROTEGIDOS)
 DROP FUNCTION IF EXISTS public.get_invoice_by_order(UUID) CASCADE;
-DROP FUNCTION IF EXISTS public.get_invoice_by_order CASCADE;
 CREATE OR REPLACE FUNCTION public.get_invoice_by_order(p_order_id UUID)
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
     v_invoice RECORD;
@@ -891,7 +1000,7 @@ $$;
 
 -- 7.2.1 CREACIÓN ATÓMICA DE PRODUCTO Y REGISTRO DE STOCK INICIAL (ADMIN ONLY)
 DROP FUNCTION IF EXISTS public.create_product_atomic(TEXT, TEXT, TEXT, NUMERIC, NUMERIC, INT, INT, UUID, TEXT, BOOLEAN, BOOLEAN) CASCADE;
-DROP FUNCTION IF EXISTS public.create_product_atomic CASCADE;
+DROP FUNCTION IF EXISTS public.create_product_atomic(TEXT, TEXT, TEXT, NUMERIC, NUMERIC, INT, INT, UUID, TEXT, BOOLEAN, BOOLEAN, TEXT) CASCADE;
 CREATE OR REPLACE FUNCTION public.create_product_atomic(
     p_code TEXT,
     p_name TEXT,
@@ -903,15 +1012,18 @@ CREATE OR REPLACE FUNCTION public.create_product_atomic(
     p_category_id UUID DEFAULT NULL,
     p_image_url TEXT DEFAULT NULL,
     p_is_active BOOLEAN DEFAULT true,
-    p_is_featured BOOLEAN DEFAULT false
+    p_is_featured BOOLEAN DEFAULT false,
+    p_barcode TEXT DEFAULT NULL
 )
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
     v_clean_code TEXT;
     v_clean_name TEXT;
+    v_clean_barcode TEXT;
     v_product RECORD;
     v_category RECORD;
     v_movement_id UUID;
@@ -924,6 +1036,7 @@ BEGIN
     -- 2. Validaciones de integridad
     v_clean_code := UPPER(TRIM(p_code));
     v_clean_name := TRIM(p_name);
+    v_clean_barcode := NULLIF(TRIM(p_barcode), '');
 
     IF v_clean_code IS NULL OR v_clean_code = '' THEN
         RAISE EXCEPTION 'El código o SKU del producto es obligatorio.';
@@ -954,6 +1067,11 @@ BEGIN
         RAISE EXCEPTION 'Ya existe un producto registrado con el código "%".', v_clean_code;
     END IF;
 
+    -- Verificar unicidad de código de barras si fue provisto
+    IF v_clean_barcode IS NOT NULL AND EXISTS (SELECT 1 FROM public.products WHERE barcode = v_clean_barcode) THEN
+        RAISE EXCEPTION 'Ya existe un producto registrado con el código de barras "%".', v_clean_barcode;
+    END IF;
+
     -- Verificar categoría si fue provista
     IF p_category_id IS NOT NULL THEN
         SELECT * INTO v_category FROM public.categories WHERE id = p_category_id;
@@ -965,6 +1083,7 @@ BEGIN
     -- 3. Inserción atómica del producto en la tabla
     INSERT INTO public.products (
         code,
+        barcode,
         name,
         description,
         price,
@@ -977,6 +1096,7 @@ BEGIN
         is_featured
     ) VALUES (
         v_clean_code,
+        COALESCE(v_clean_barcode, v_clean_code),
         v_clean_name,
         NULLIF(TRIM(p_description), ''),
         p_price,
@@ -1035,7 +1155,6 @@ $$;
 
 -- 7.3 AJUSTE ATÓMICO DE STOCK MANUAL (ADMIN ONLY)
 DROP FUNCTION IF EXISTS public.adjust_product_stock_atomic(UUID, INT, TEXT, TEXT, TEXT) CASCADE;
-DROP FUNCTION IF EXISTS public.adjust_product_stock_atomic CASCADE;
 CREATE OR REPLACE FUNCTION public.adjust_product_stock_atomic(
     p_product_id UUID,
     p_quantity_change INT,
@@ -1046,6 +1165,7 @@ CREATE OR REPLACE FUNCTION public.adjust_product_stock_atomic(
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
     v_product RECORD;
@@ -1099,7 +1219,6 @@ $$;
 
 -- 7.4 CREACIÓN ATÓMICA DE PEDIDOS WEB CON DESCUENTO DE STOCK Y CÁLCULO SEVERAL SEGURO
 DROP FUNCTION IF EXISTS public.create_order_atomic(TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, JSONB) CASCADE;
-DROP FUNCTION IF EXISTS public.create_order_atomic CASCADE;
 CREATE OR REPLACE FUNCTION public.create_order_atomic(
     p_order_number TEXT DEFAULT NULL,
     p_client_request_id TEXT DEFAULT NULL,
@@ -1114,6 +1233,7 @@ CREATE OR REPLACE FUNCTION public.create_order_atomic(
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
     v_existing_order RECORD;
@@ -1332,7 +1452,6 @@ $$;
 -- RESOLUCIÓN DE CLIENTES: AUTORIDAD EXCLUSIVA DE BD PARA CUSTOMER_NAME Y ASOCIACIÓN DE CUSTOMER_ID
 DROP FUNCTION IF EXISTS public.process_pos_sale_atomic(TEXT, TEXT, TEXT, TEXT, TEXT, NUMERIC, NUMERIC, NUMERIC, NUMERIC, TEXT, TEXT, TEXT, TEXT, JSONB) CASCADE;
 DROP FUNCTION IF EXISTS public.process_pos_sale_atomic(TEXT, TEXT, TEXT, TEXT, TEXT, NUMERIC, NUMERIC, NUMERIC, NUMERIC, TEXT, TEXT, TEXT, TEXT, JSONB, UUID, TEXT) CASCADE;
-DROP FUNCTION IF EXISTS public.process_pos_sale_atomic CASCADE;
 
 CREATE OR REPLACE FUNCTION public.process_pos_sale_atomic(
     p_order_number TEXT DEFAULT NULL,
@@ -1355,6 +1474,7 @@ CREATE OR REPLACE FUNCTION public.process_pos_sale_atomic(
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
     v_order_id UUID;
@@ -1390,8 +1510,8 @@ DECLARE
     v_curr_month TEXT := to_char(now(), 'MM');
     v_seq_num BIGINT;
 BEGIN
-    -- Control de acceso administrativo
-    IF NOT public.is_admin() THEN
+    -- Control de acceso para personal operativo de tienda (admin o cajero)
+    IF NOT public.is_staff() THEN
         RAISE EXCEPTION 'Operación denegada: Solo personal autorizado puede registrar ventas POS.';
     END IF;
 
@@ -1747,7 +1867,6 @@ $$;
 
 -- 7.6 CANCELACIÓN ATÓMICA DE PEDIDO CON DEVOLUCIÓN DE STOCK
 DROP FUNCTION IF EXISTS public.cancel_order_with_stock_return(UUID, TEXT, TEXT) CASCADE;
-DROP FUNCTION IF EXISTS public.cancel_order_with_stock_return CASCADE;
 CREATE OR REPLACE FUNCTION public.cancel_order_with_stock_return(
     p_order_id UUID,
     p_reason TEXT,
@@ -1756,6 +1875,7 @@ CREATE OR REPLACE FUNCTION public.cancel_order_with_stock_return(
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
     v_order RECORD;
@@ -1831,17 +1951,17 @@ $$;
 -- SEGURIDAD CRÍTICA: LA BASE DE DATOS CONTROLA ESTADOS, SALDOS Y TRANSACCIONES
 DROP FUNCTION IF EXISTS public.process_payment_and_invoice(UUID, TEXT, NUMERIC, TEXT, TEXT) CASCADE;
 DROP FUNCTION IF EXISTS public.process_payment_and_invoice(UUID, TEXT, NUMERIC(14,2), TEXT, TEXT) CASCADE;
-DROP FUNCTION IF EXISTS public.process_payment_and_invoice CASCADE;
 CREATE OR REPLACE FUNCTION public.process_payment_and_invoice(
     p_order_id UUID,
     p_payment_method TEXT,
     p_amount NUMERIC(14,2),
     p_reference TEXT DEFAULT NULL,
-    p_cashier_name TEXT DEFAULT 'Admin BIKIE'
+    p_cashier_name TEXT DEFAULT 'Personal BIKIE'
 )
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
     v_order RECORD;
@@ -1859,8 +1979,8 @@ DECLARE
     v_curr_month TEXT := to_char(now(), 'MM');
     v_seq_num BIGINT;
 BEGIN
-    IF NOT public.is_admin() THEN
-        RAISE EXCEPTION 'Operación denegada: Solo administradores pueden registrar pagos y emitir facturas.';
+    IF NOT public.is_staff() THEN
+        RAISE EXCEPTION 'Operación denegada: Solo personal autorizado puede registrar pagos y emitir facturas.';
     END IF;
 
     -- Bloquear pedido con FOR UPDATE para garantizar consistencia transaccional
@@ -2001,7 +2121,6 @@ $$;
 
 -- 7.8 ACTUALIZACIÓN ATÓMICA DE ESTADO DE PEDIDO
 DROP FUNCTION IF EXISTS public.update_order_status_atomic(UUID, TEXT, TEXT, TEXT) CASCADE;
-DROP FUNCTION IF EXISTS public.update_order_status_atomic CASCADE;
 CREATE OR REPLACE FUNCTION public.update_order_status_atomic(
     p_order_id UUID,
     p_new_status TEXT,
@@ -2011,13 +2130,14 @@ CREATE OR REPLACE FUNCTION public.update_order_status_atomic(
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
     v_order RECORD;
     v_prev_status TEXT;
 BEGIN
-    IF NOT public.is_admin() THEN
-        RAISE EXCEPTION 'Solo administradores pueden cambiar el estado de pedidos.';
+    IF NOT public.is_staff() THEN
+        RAISE EXCEPTION 'Operación denegada: Solo personal autorizado puede cambiar el estado de pedidos.';
     END IF;
 
     SELECT * INTO v_order
@@ -2054,7 +2174,6 @@ $$;
 
 -- 7.9 CANCELACIÓN ATÓMICA Y LÓGICA DE FACTURA (ANTIFRAUDE, PROHIBIDO DELETE)
 DROP FUNCTION IF EXISTS public.cancel_invoice_atomic(UUID, TEXT, TEXT) CASCADE;
-DROP FUNCTION IF EXISTS public.cancel_invoice_atomic CASCADE;
 CREATE OR REPLACE FUNCTION public.cancel_invoice_atomic(
     p_invoice_id UUID,
     p_reason TEXT DEFAULT 'Anulación por administrador',
@@ -2063,6 +2182,7 @@ CREATE OR REPLACE FUNCTION public.cancel_invoice_atomic(
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
     v_invoice RECORD;
@@ -2113,7 +2233,6 @@ $$;
 
 -- 7.10 ALIAS DE CANCELACIÓN ATÓMICA DE PEDIDOS
 DROP FUNCTION IF EXISTS public.cancel_order_atomic(UUID, TEXT, TEXT) CASCADE;
-DROP FUNCTION IF EXISTS public.cancel_order_atomic CASCADE;
 CREATE OR REPLACE FUNCTION public.cancel_order_atomic(
     p_order_id UUID,
     p_reason TEXT DEFAULT 'Cancelación por administrador',
@@ -2122,6 +2241,7 @@ CREATE OR REPLACE FUNCTION public.cancel_order_atomic(
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public
 AS $$
 BEGIN
     IF NOT public.is_admin() THEN
@@ -2131,12 +2251,436 @@ BEGIN
 END;
 $$;
 
+-- 7.11 REGISTRO ATÓMICO DE COMPRA A PROVEEDOR E INCREMENTO DE STOCK
+DROP FUNCTION IF EXISTS public.register_purchase_atomic(UUID, TEXT, TEXT, TEXT, JSONB) CASCADE;
+DROP FUNCTION IF EXISTS public.register_purchase_atomic(UUID, TEXT, TEXT, JSONB, TEXT, TEXT) CASCADE;
+DROP FUNCTION IF EXISTS public.register_purchase_atomic(UUID, TEXT, TEXT, JSONB) CASCADE;
+CREATE OR REPLACE FUNCTION public.register_purchase_atomic(
+    p_supplier_id UUID DEFAULT NULL,
+    p_notes TEXT DEFAULT NULL,
+    p_created_by TEXT DEFAULT 'Admin BIKIE',
+    p_items JSONB DEFAULT '[]'::jsonb,
+    p_invoice_number TEXT DEFAULT NULL,
+    p_payment_method TEXT DEFAULT 'cash'
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_purchase_id UUID;
+    v_purchase_number TEXT;
+    v_supplier_name TEXT;
+    v_item RECORD;
+    v_product RECORD;
+    v_total NUMERIC(14,2) := 0;
+    v_curr_year TEXT := to_char(now(), 'YYYY');
+    v_seq_num BIGINT;
+    v_cost NUMERIC(14,2);
+BEGIN
+    IF NOT public.is_admin() THEN
+        RAISE EXCEPTION 'Operación denegada: Solo administradores pueden registrar compras.';
+    END IF;
+
+    IF p_items IS NULL OR jsonb_array_length(p_items) = 0 THEN
+        RAISE EXCEPTION 'La compra debe contener al menos un producto válido.';
+    END IF;
+
+    -- Obtener o resolver nombre de proveedor
+    IF p_supplier_id IS NOT NULL THEN
+        SELECT name INTO v_supplier_name FROM public.suppliers WHERE id = p_supplier_id;
+    END IF;
+    v_supplier_name := COALESCE(v_supplier_name, 'Proveedor General');
+
+    -- Generar número de compra secuencial
+    SELECT COALESCE(MAX(SUBSTRING(purchase_number FROM 'COM-[0-9]+-([0-9]+)')::BIGINT), 0) + 1
+    INTO v_seq_num
+    FROM public.purchases
+    WHERE purchase_number LIKE 'COM-' || v_curr_year || '-%';
+
+    v_purchase_number := 'COM-' || v_curr_year || '-' || LPAD(v_seq_num::TEXT, 5, '0');
+
+    -- Calcular total preliminary
+    FOR v_item IN SELECT * FROM jsonb_to_recordset(p_items) AS x(
+        product_id UUID, quantity INT, cost_price NUMERIC(14,2), unit_cost NUMERIC(14,2)
+    )
+    LOOP
+        IF v_item.quantity <= 0 THEN
+            RAISE EXCEPTION 'La cantidad del producto debe ser mayor que 0.';
+        END IF;
+        v_cost := COALESCE(v_item.cost_price, v_item.unit_cost, 0);
+        IF v_cost < 0 THEN
+            RAISE EXCEPTION 'El costo unitario no puede ser negativo.';
+        END IF;
+        v_total := v_total + (v_item.quantity * v_cost);
+    END LOOP;
+
+    -- Insertar cabecera de compra compatible con tabla purchases
+    INSERT INTO public.purchases (
+        purchase_number, supplier_id, supplier_name, total_amount,
+        status, notes, created_by
+    ) VALUES (
+        v_purchase_number, p_supplier_id, v_supplier_name, v_total,
+        'received', p_notes, COALESCE(p_created_by, 'Admin BIKIE')
+    ) RETURNING id INTO v_purchase_id;
+
+    -- Procesar cada producto con bloqueo pesimista y orden determinista
+    FOR v_item IN SELECT * FROM jsonb_to_recordset(p_items) AS x(
+        product_id UUID, quantity INT, cost_price NUMERIC(14,2), unit_cost NUMERIC(14,2)
+    ) ORDER BY product_id ASC
+    LOOP
+        v_cost := COALESCE(v_item.cost_price, v_item.unit_cost, 0);
+
+        SELECT * INTO v_product FROM public.products WHERE id = v_item.product_id FOR UPDATE;
+        IF NOT FOUND OR v_product.id IS NULL THEN
+            RAISE EXCEPTION 'Producto con ID % no encontrado.', v_item.product_id;
+        END IF;
+
+        INSERT INTO public.purchase_items (
+            purchase_id, product_id, product_name, quantity, cost_price, subtotal
+        ) VALUES (
+            v_purchase_id, v_product.id, v_product.name, v_item.quantity, v_cost, (v_item.quantity * v_cost)
+        );
+
+        UPDATE public.products
+        SET stock = stock + v_item.quantity,
+            cost_price = v_cost,
+            updated_at = now()
+        WHERE id = v_product.id;
+
+        INSERT INTO public.inventory_movements (
+            product_id, type, quantity, previous_stock, new_stock, note
+        ) VALUES (
+            v_product.id, 'purchase', v_item.quantity,
+            v_product.stock, (v_product.stock + v_item.quantity),
+            'Entrada por Compra #' || v_purchase_number
+        );
+    END LOOP;
+
+    RETURN jsonb_build_object(
+        'success', true,
+        'purchase_id', v_purchase_id,
+        'purchase_number', v_purchase_number,
+        'total', v_total
+    );
+END;
+$$;
+
+-- 7.12 ELIMINACIÓN SEGURA DE USUARIO DEL SISTEMA
+DROP FUNCTION IF EXISTS public.delete_system_user(UUID) CASCADE;
+CREATE OR REPLACE FUNCTION public.delete_system_user(p_user_id UUID)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_target_profile RECORD;
+    v_admin_count INT;
+BEGIN
+    IF NOT public.is_admin() THEN
+        RAISE EXCEPTION 'Operación denegada: Solo administradores pueden eliminar usuarios.';
+    END IF;
+
+    IF p_user_id = auth.uid() THEN
+        RAISE EXCEPTION 'Operación denegada: No puedes eliminar tu propia cuenta de administrador.';
+    END IF;
+
+    SELECT * INTO v_target_profile FROM public.profiles WHERE id = p_user_id;
+    IF NOT FOUND OR v_target_profile.id IS NULL THEN
+        RAISE EXCEPTION 'Usuario con ID % no encontrado.', p_user_id;
+    END IF;
+
+    -- Proteger al último administrador
+    IF v_target_profile.role = 'admin' THEN
+        SELECT count(*) INTO v_admin_count FROM public.profiles WHERE role = 'admin';
+        IF v_admin_count <= 1 THEN
+            RAISE EXCEPTION 'Operación bloqueada: No se puede eliminar al único administrador del sistema.';
+        END IF;
+    END IF;
+
+    DELETE FROM public.profiles WHERE id = p_user_id;
+    BEGIN
+        DELETE FROM auth.users WHERE id = p_user_id;
+    EXCEPTION WHEN OTHERS THEN
+        NULL;
+    END;
+
+    RETURN jsonb_build_object('success', true, 'user_id', p_user_id);
+END;
+$$;
+
+-- 7.13 ELIMINACIÓN ATÓMICA / ARCHIVADO DE PEDIDO
+DROP FUNCTION IF EXISTS public.delete_order_atomic(UUID) CASCADE;
+CREATE OR REPLACE FUNCTION public.delete_order_atomic(p_order_id UUID)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_order RECORD;
+BEGIN
+    IF NOT public.is_admin() THEN
+        RAISE EXCEPTION 'Operación denegada: Solo administradores pueden eliminar pedidos.';
+    END IF;
+
+    SELECT * INTO v_order FROM public.orders WHERE id = p_order_id FOR UPDATE;
+    IF NOT FOUND OR v_order.id IS NULL THEN
+        RAISE EXCEPTION 'Pedido con ID % no encontrado.', p_order_id;
+    END IF;
+
+    -- Reintegrar inventario si el pedido no estaba previamente cancelado ni completado
+    IF v_order.status NOT IN ('cancelled', 'completed') THEN
+        PERFORM public.cancel_order_with_stock_return(p_order_id, 'Eliminación administrativa de pedido', 'Admin');
+    END IF;
+
+    UPDATE public.orders
+    SET is_archived = true,
+        status = 'cancelled',
+        updated_at = now()
+    WHERE id = p_order_id;
+
+    RETURN jsonb_build_object('success', true, 'order_id', p_order_id);
+END;
+$$;
+
+-- 7.14 ELIMINACIÓN ATÓMICA / ARCHIVADO DE FACTURA
+DROP FUNCTION IF EXISTS public.delete_invoice_atomic(UUID) CASCADE;
+CREATE OR REPLACE FUNCTION public.delete_invoice_atomic(p_invoice_id UUID)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_invoice RECORD;
+BEGIN
+    IF NOT public.is_admin() THEN
+        RAISE EXCEPTION 'Operación denegada: Solo administradores pueden eliminar facturas.';
+    END IF;
+
+    SELECT * INTO v_invoice FROM public.invoices WHERE id = p_invoice_id FOR UPDATE;
+    IF NOT FOUND OR v_invoice.id IS NULL THEN
+        RAISE EXCEPTION 'Factura con ID % no encontrada.', p_invoice_id;
+    END IF;
+
+    IF v_invoice.status <> 'cancelled' THEN
+        PERFORM public.cancel_invoice_atomic(p_invoice_id, 'Eliminación administrativa de factura', 'Admin');
+    END IF;
+
+    UPDATE public.invoices
+    SET is_archived = true,
+        updated_at = now()
+    WHERE id = p_invoice_id;
+
+    RETURN jsonb_build_object('success', true, 'invoice_id', p_invoice_id);
+END;
+$$;
+
+-- 7.15 VACIADO ATÓMICO / ARCHIVADO GENERAL DE PEDIDOS
+DROP FUNCTION IF EXISTS public.clear_orders_atomic() CASCADE;
+CREATE OR REPLACE FUNCTION public.clear_orders_atomic()
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_count INT;
+BEGIN
+    IF NOT public.is_admin() THEN
+        RAISE EXCEPTION 'Operación denegada: Solo administradores pueden vaciar pedidos.';
+    END IF;
+
+    UPDATE public.orders
+    SET is_archived = true,
+        status = 'cancelled',
+        updated_at = now()
+    WHERE is_archived = false;
+
+    GET DIAGNOSTICS v_count = ROW_COUNT;
+
+    RETURN jsonb_build_object('success', true, 'archived_count', v_count);
+END;
+$$;
+
+-- 7.16 VACIADO ATÓMICO / ARCHIVADO GENERAL DE FACTURAS
+DROP FUNCTION IF EXISTS public.clear_invoices_atomic() CASCADE;
+CREATE OR REPLACE FUNCTION public.clear_invoices_atomic()
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_count INT;
+BEGIN
+    IF NOT public.is_admin() THEN
+        RAISE EXCEPTION 'Operación denegada: Solo administradores pueden vaciar facturas.';
+    END IF;
+
+    UPDATE public.invoices
+    SET is_archived = true,
+        status = 'cancelled',
+        updated_at = now()
+    WHERE is_archived = false;
+
+    GET DIAGNOSTICS v_count = ROW_COUNT;
+
+    RETURN jsonb_build_object('success', true, 'archived_count', v_count);
+END;
+$$;
+
+-- 7.17 APERTURA Y CIERRE ATÓMICO DE TURNO DE CAJA (STAFF: ADMIN O CAJERO)
+DROP FUNCTION IF EXISTS public.open_cash_shift_atomic(UUID, NUMERIC, TEXT) CASCADE;
+DROP FUNCTION IF EXISTS public.open_cash_shift_atomic(NUMERIC, TEXT, TEXT) CASCADE;
+CREATE OR REPLACE FUNCTION public.open_cash_shift_atomic(
+    p_initial_amount NUMERIC(14,2) DEFAULT 0,
+    p_opened_by TEXT DEFAULT 'Cajero BIKIE',
+    p_notes TEXT DEFAULT NULL
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_shift RECORD;
+    v_active_id UUID;
+    v_new_shift_id UUID;
+BEGIN
+    IF NOT public.is_staff() THEN
+        RAISE EXCEPTION 'Operación denegada: Solo personal autorizado puede abrir turnos de caja.';
+    END IF;
+
+    IF p_initial_amount < 0 THEN
+        RAISE EXCEPTION 'El monto de apertura de caja no puede ser negativo.';
+    END IF;
+
+    -- Verificar si ya hay un turno abierto
+    SELECT id INTO v_active_id FROM public.cash_shifts WHERE status = 'open' LIMIT 1;
+    IF v_active_id IS NOT NULL THEN
+        RAISE EXCEPTION 'Ya existe un turno de caja abierto (ID: %). Ciérralo antes de abrir uno nuevo.', v_active_id;
+    END IF;
+
+    INSERT INTO public.cash_shifts (
+        opened_by, initial_amount, total_sales, status, notes, opened_at
+    ) VALUES (
+        COALESCE(p_opened_by, 'Cajero BIKIE'), p_initial_amount, 0, 'open',
+        COALESCE(p_notes, 'Apertura de turno en caja'), now()
+    ) RETURNING * INTO v_shift;
+
+    RETURN jsonb_build_object(
+        'success', true,
+        'id', v_shift.id,
+        'opened_by', v_shift.opened_by,
+        'initial_amount', v_shift.initial_amount,
+        'final_amount', NULL,
+        'total_sales', 0,
+        'status', 'open',
+        'notes', v_shift.notes,
+        'opened_at', v_shift.opened_at
+    );
+END;
+$$;
+
+DROP FUNCTION IF EXISTS public.close_cash_shift_atomic(UUID, NUMERIC, TEXT) CASCADE;
+CREATE OR REPLACE FUNCTION public.close_cash_shift_atomic(
+    p_shift_id UUID,
+    p_final_amount NUMERIC(14,2),
+    p_notes TEXT DEFAULT NULL
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_shift RECORD;
+    v_cash_sales NUMERIC(14,2) := 0;
+    v_deposits NUMERIC(14,2) := 0;
+    v_withdrawals NUMERIC(14,2) := 0;
+    v_expected NUMERIC(14,2) := 0;
+    v_diff NUMERIC(14,2) := 0;
+    v_updated RECORD;
+BEGIN
+    IF NOT public.is_staff() THEN
+        RAISE EXCEPTION 'Operación denegada: Solo personal autorizado puede cerrar turnos de caja.';
+    END IF;
+
+    IF p_final_amount < 0 THEN
+        RAISE EXCEPTION 'El conteo físico de efectivo no puede ser negativo.';
+    END IF;
+
+    SELECT * INTO v_shift FROM public.cash_shifts WHERE id = p_shift_id FOR UPDATE;
+    IF NOT FOUND OR v_shift.id IS NULL THEN
+        RAISE EXCEPTION 'Turno de caja con ID % no encontrado.', p_shift_id;
+    END IF;
+
+    IF v_shift.status = 'closed' THEN
+        RAISE EXCEPTION 'El turno de caja ya se encuentra cerrado.';
+    END IF;
+
+    -- Calcular ventas en efectivo durante el turno
+    SELECT COALESCE(SUM(total), 0) INTO v_cash_sales
+    FROM public.invoices
+    WHERE payment_method = 'cash'
+      AND status <> 'cancelled'
+      AND is_archived = false
+      AND created_at >= v_shift.opened_at
+      AND created_at <= now();
+
+    -- Calcular movimientos de caja
+    SELECT COALESCE(SUM(amount), 0) INTO v_deposits
+    FROM public.cash_movements
+    WHERE (cash_shift_id = p_shift_id OR cash_register_id = p_shift_id)
+      AND type = 'deposit';
+
+    SELECT COALESCE(SUM(amount), 0) INTO v_withdrawals
+    FROM public.cash_movements
+    WHERE (cash_shift_id = p_shift_id OR cash_register_id = p_shift_id)
+      AND type = 'withdrawal';
+
+    v_expected := v_shift.initial_amount + v_cash_sales + v_deposits - v_withdrawals;
+    v_diff := p_final_amount - v_expected;
+
+    UPDATE public.cash_shifts
+    SET status = 'closed',
+        final_amount = p_final_amount,
+        total_sales = v_cash_sales,
+        closed_at = now(),
+        notes = COALESCE(p_notes, notes),
+        updated_at = now()
+    WHERE id = p_shift_id
+    RETURNING * INTO v_updated;
+
+    RETURN jsonb_build_object(
+        'success', true,
+        'expected_amount', v_expected,
+        'final_amount', p_final_amount,
+        'difference', v_diff,
+        'shift', jsonb_build_object(
+            'id', v_updated.id,
+            'opened_by', v_updated.opened_by,
+            'opened_at', v_updated.opened_at,
+            'closed_at', v_updated.closed_at,
+            'initial_amount', v_updated.initial_amount,
+            'final_amount', v_updated.final_amount,
+            'total_sales', v_updated.total_sales,
+            'status', v_updated.status,
+            'notes', v_updated.notes
+        )
+    );
+END;
+$$;
+
 -- ==============================================================================
--- 7.15 CREAR SESIÓN DE ESCÁNER MÓVIL REMOTO PARA POS
+-- 7.18 CREAR SESIÓN DE ESCÁNER MÓVIL REMOTO PARA POS
 -- ==============================================================================
 DROP FUNCTION IF EXISTS public.create_pos_scanner_session(TEXT, INTEGER) CASCADE;
 DROP FUNCTION IF EXISTS public.create_pos_scanner_session(INTEGER, TEXT) CASCADE;
-DROP FUNCTION IF EXISTS public.create_pos_scanner_session CASCADE;
 
 CREATE OR REPLACE FUNCTION public.create_pos_scanner_session(
     p_pos_identifier TEXT DEFAULT 'Caja Principal',
@@ -2145,6 +2689,7 @@ CREATE OR REPLACE FUNCTION public.create_pos_scanner_session(
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
     v_session_id UUID;
@@ -2200,6 +2745,7 @@ CREATE OR REPLACE FUNCTION public.create_pos_scanner_session(
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public
 AS $$
 BEGIN
     RETURN public.create_pos_scanner_session(p_pos_identifier, p_expires_minutes);
@@ -2207,7 +2753,7 @@ END;
 $$;
 
 -- ==============================================================================
--- 7.16 CONECTAR DISPOSITIVO MÓVIL A LA SESIÓN DE ESCÁNER
+-- 7.19 CONECTAR DISPOSITIVO MÓVIL A LA SESIÓN DE ESCÁNER
 -- ==============================================================================
 DROP FUNCTION IF EXISTS public.connect_pos_scanner_session(TEXT, TEXT, TEXT, TEXT) CASCADE;
 CREATE OR REPLACE FUNCTION public.connect_pos_scanner_session(
@@ -2219,6 +2765,7 @@ CREATE OR REPLACE FUNCTION public.connect_pos_scanner_session(
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
     v_session RECORD;
@@ -2265,7 +2812,7 @@ BEGIN
         RAISE EXCEPTION 'Esta sesión de escáner fue finalizada desde el POS.';
     END IF;
 
-    -- Reconexión fluida del dispositivo móvil al POS sin bloqueos de autorización
+    -- Reconexión fluida del dispositivo móvil al POS
     UPDATE public.pos_scanner_sessions
     SET status = 'connected',
         device_id = COALESCE(NULLIF(trim(p_device_id), ''), v_session.device_id, 'device-' || substr(md5(random()::text), 1, 8)),
@@ -2274,9 +2821,9 @@ BEGIN
     WHERE id = v_session.id
     RETURNING * INTO v_session;
 
+    -- Seguridad: NO devolvemos session_token a un cliente anónimo móvil
     RETURN jsonb_build_object(
         'id', v_session.id,
-        'session_token', v_session.session_token,
         'short_code', v_session.short_code,
         'pos_identifier', v_session.pos_identifier,
         'status', v_session.status,
@@ -2289,7 +2836,7 @@ END;
 $$;
 
 -- ==============================================================================
--- 7.17 DESCONECTAR SESIÓN DE ESCÁNER
+-- 7.20 DESCONECTAR SESIÓN DE ESCÁNER
 -- ==============================================================================
 DROP FUNCTION IF EXISTS public.disconnect_pos_scanner_session(UUID, TEXT, TEXT) CASCADE;
 CREATE OR REPLACE FUNCTION public.disconnect_pos_scanner_session(
@@ -2300,33 +2847,43 @@ CREATE OR REPLACE FUNCTION public.disconnect_pos_scanner_session(
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
-    v_target_id UUID;
+    v_session RECORD;
 BEGIN
     IF p_session_id IS NOT NULL THEN
-        v_target_id := p_session_id;
+        SELECT * INTO v_session FROM public.pos_scanner_sessions WHERE id = p_session_id;
     ELSIF p_token IS NOT NULL THEN
-        SELECT id INTO v_target_id
-        FROM public.pos_scanner_sessions
-        WHERE session_token = trim(p_token);
+        SELECT * INTO v_session FROM public.pos_scanner_sessions WHERE session_token = trim(p_token);
     END IF;
 
-    IF v_target_id IS NULL THEN
+    IF v_session.id IS NULL THEN
         RETURN jsonb_build_object('success', false, 'message', 'Sesión no encontrada');
+    END IF;
+
+    -- Autorización estricta: staff, creador, token coincidente o device_id coincidente
+    IF NOT (
+        public.is_staff()
+        OR auth.uid() = v_session.created_by
+        OR (p_token IS NOT NULL AND trim(p_token) = v_session.session_token)
+        OR (p_device_id IS NOT NULL AND v_session.device_id = p_device_id)
+    ) THEN
+        RAISE EXCEPTION 'Operación no autorizada para desconectar esta sesión.';
     END IF;
 
     UPDATE public.pos_scanner_sessions
     SET status = 'disconnected',
         disconnected_at = timezone('utc'::text, now())
-    WHERE id = v_target_id;
+    WHERE id = v_session.id;
 
-    RETURN jsonb_build_object('success', true, 'session_id', v_target_id, 'status', 'disconnected');
+    RETURN jsonb_build_object('success', true, 'session_id', v_session.id, 'status', 'disconnected');
 END;
 $$;
 
 -- ==============================================================================
--- 7.18 VALIDACIÓN DE EVENTO DE ESCANEO DESDE DISPOSITIVO MÓVIL
+-- 7.21 VALIDACIÓN DE EVENTO DE ESCANEO DESDE DISPOSITIVO MÓVIL
+-- PRIORIDAD ABSOLUTA: BUSCA PRIMERO POR 'barcode', Y COMO ALTERNATIVA POR 'code' O ID
 -- ==============================================================================
 DROP FUNCTION IF EXISTS public.validate_pos_scan_event(TEXT, TEXT, TEXT) CASCADE;
 CREATE OR REPLACE FUNCTION public.validate_pos_scan_event(
@@ -2337,6 +2894,7 @@ CREATE OR REPLACE FUNCTION public.validate_pos_scan_event(
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
     v_session RECORD;
@@ -2377,12 +2935,22 @@ BEGIN
         last_scanned_at = v_now
     WHERE id = v_session.id;
 
-    -- Buscar producto real en la base de datos
-    SELECT id, code, name, price, stock, is_active
+    -- Buscar producto real: PRIMERO POR BARCODE, LUEGO POR CODE, LUEGO POR ID
+    SELECT id, code, barcode, name, price, stock, is_active
     INTO v_product
     FROM public.products
-    WHERE (lower(code) = lower(v_clean_barcode) OR id::text = v_clean_barcode)
+    WHERE (
+        barcode = v_clean_barcode
+        OR lower(code) = lower(v_clean_barcode)
+        OR id::text = v_clean_barcode
+    )
       AND is_active = true
+    ORDER BY 
+        CASE 
+            WHEN barcode = v_clean_barcode THEN 1
+            WHEN lower(code) = lower(v_clean_barcode) THEN 2
+            ELSE 3
+        END
     LIMIT 1;
 
     IF v_product.id IS NULL THEN
@@ -2397,7 +2965,8 @@ BEGIN
     RETURN jsonb_build_object(
         'valid', true,
         'found', true,
-        'barcode', v_product.code,
+        'barcode', COALESCE(v_product.barcode, v_product.code),
+        'code', v_product.code,
         'product_id', v_product.id,
         'product_name', v_product.name,
         'price', v_product.price,
@@ -2407,7 +2976,7 @@ END;
 $$;
 
 -- ==============================================================================
--- 7.19 ESTADO DE SESIÓN DE ESCÁNER
+-- 7.22 ESTADO DE SESIÓN DE ESCÁNER
 -- ==============================================================================
 DROP FUNCTION IF EXISTS public.get_pos_scanner_session_status(UUID, TEXT) CASCADE;
 CREATE OR REPLACE FUNCTION public.get_pos_scanner_session_status(
@@ -2417,9 +2986,11 @@ CREATE OR REPLACE FUNCTION public.get_pos_scanner_session_status(
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
     v_session RECORD;
+    v_allow_token BOOLEAN := false;
 BEGIN
     IF p_session_id IS NOT NULL THEN
         SELECT * INTO v_session FROM public.pos_scanner_sessions WHERE id = p_session_id;
@@ -2438,9 +3009,13 @@ BEGIN
         v_session.status := 'expired';
     END IF;
 
+    IF public.is_staff() OR auth.uid() = v_session.created_by THEN
+        v_allow_token := true;
+    END IF;
+
     RETURN jsonb_build_object(
         'id', v_session.id,
-        'session_token', v_session.session_token,
+        'session_token', CASE WHEN v_allow_token THEN v_session.session_token ELSE NULL END,
         'short_code', v_session.short_code,
         'pos_identifier', v_session.pos_identifier,
         'status', v_session.status,
@@ -2455,17 +3030,19 @@ END;
 $$;
 
 -- ==============================================================================
--- 7.11 PERMISOS EXPLÍCITOS PARA FUNCIONES SECURITY DEFINER
+-- 7.23 PERMISOS EXPLÍCITOS PARA FUNCIONES SECURITY DEFINER
 -- ==============================================================================
--- Revocar ejecución pública indiscriminada de funciones del sistema
+-- Revocar ejecución pública indiscriminada de funciones de sistema
 REVOKE ALL ON FUNCTION public.is_admin() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.is_cashier() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.is_staff() FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.handle_new_user() FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.protect_profile_role() FROM PUBLIC;
 REVOKE ALL ON PROCEDURE public.promote_user_to_admin(TEXT) FROM PUBLIC;
 REVOKE ALL ON PROCEDURE public.promote_user_to_admin(TEXT) FROM anon, authenticated;
 
--- Revocar ejecución pública indiscriminada de RPCs atómicos
-REVOKE ALL ON FUNCTION public.create_product_atomic(TEXT, TEXT, TEXT, NUMERIC, NUMERIC, INT, INT, UUID, TEXT, BOOLEAN, BOOLEAN) FROM PUBLIC;
+-- Revocar de PUBLIC
+REVOKE ALL ON FUNCTION public.create_product_atomic(TEXT, TEXT, TEXT, NUMERIC, NUMERIC, INT, INT, UUID, TEXT, BOOLEAN, BOOLEAN, TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.process_pos_sale_atomic(TEXT, TEXT, TEXT, TEXT, TEXT, NUMERIC, NUMERIC, NUMERIC, NUMERIC, TEXT, TEXT, TEXT, TEXT, JSONB, UUID, TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.process_payment_and_invoice(UUID, TEXT, NUMERIC, TEXT, TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.adjust_product_stock_atomic(UUID, INT, TEXT, TEXT, TEXT) FROM PUBLIC;
@@ -2476,9 +3053,17 @@ REVOKE ALL ON FUNCTION public.update_order_status_atomic(UUID, TEXT, TEXT, TEXT)
 REVOKE ALL ON FUNCTION public.create_order_atomic(TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, JSONB) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.track_order(TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.get_invoice_by_order(UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.register_purchase_atomic(UUID, TEXT, TEXT, JSONB, TEXT, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.delete_system_user(UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.delete_order_atomic(UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.delete_invoice_atomic(UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.clear_orders_atomic() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.clear_invoices_atomic() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.open_cash_shift_atomic(NUMERIC, TEXT, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.close_cash_shift_atomic(UUID, NUMERIC, TEXT) FROM PUBLIC;
 
--- Revocar también explícitamente del rol 'anon' para funciones administrativas
-REVOKE ALL ON FUNCTION public.create_product_atomic(TEXT, TEXT, TEXT, NUMERIC, NUMERIC, INT, INT, UUID, TEXT, BOOLEAN, BOOLEAN) FROM anon;
+-- Revocar de anon
+REVOKE ALL ON FUNCTION public.create_product_atomic(TEXT, TEXT, TEXT, NUMERIC, NUMERIC, INT, INT, UUID, TEXT, BOOLEAN, BOOLEAN, TEXT) FROM anon;
 REVOKE ALL ON FUNCTION public.process_pos_sale_atomic(TEXT, TEXT, TEXT, TEXT, TEXT, NUMERIC, NUMERIC, NUMERIC, NUMERIC, TEXT, TEXT, TEXT, TEXT, JSONB, UUID, TEXT) FROM anon;
 REVOKE ALL ON FUNCTION public.process_payment_and_invoice(UUID, TEXT, NUMERIC, TEXT, TEXT) FROM anon;
 REVOKE ALL ON FUNCTION public.adjust_product_stock_atomic(UUID, INT, TEXT, TEXT, TEXT) FROM anon;
@@ -2486,10 +3071,17 @@ REVOKE ALL ON FUNCTION public.cancel_order_with_stock_return(UUID, TEXT, TEXT) F
 REVOKE ALL ON FUNCTION public.cancel_order_atomic(UUID, TEXT, TEXT) FROM anon;
 REVOKE ALL ON FUNCTION public.cancel_invoice_atomic(UUID, TEXT, TEXT) FROM anon;
 REVOKE ALL ON FUNCTION public.update_order_status_atomic(UUID, TEXT, TEXT, TEXT) FROM anon;
+REVOKE ALL ON FUNCTION public.register_purchase_atomic(UUID, TEXT, TEXT, JSONB, TEXT, TEXT) FROM anon;
+REVOKE ALL ON FUNCTION public.delete_system_user(UUID) FROM anon;
+REVOKE ALL ON FUNCTION public.delete_order_atomic(UUID) FROM anon;
+REVOKE ALL ON FUNCTION public.delete_invoice_atomic(UUID) FROM anon;
+REVOKE ALL ON FUNCTION public.clear_orders_atomic() FROM anon;
+REVOKE ALL ON FUNCTION public.clear_invoices_atomic() FROM anon;
+REVOKE ALL ON FUNCTION public.open_cash_shift_atomic(NUMERIC, TEXT, TEXT) FROM anon;
+REVOKE ALL ON FUNCTION public.close_cash_shift_atomic(UUID, NUMERIC, TEXT) FROM anon;
 
--- Otorgar ejecución de funciones administrativas exclusivamente a usuarios autenticados
--- (Nota: cada función contiene validación interna estricta con is_admin())
-GRANT EXECUTE ON FUNCTION public.create_product_atomic(TEXT, TEXT, TEXT, NUMERIC, NUMERIC, INT, INT, UUID, TEXT, BOOLEAN, BOOLEAN) TO authenticated;
+-- Otorgar a authenticated (con control de rol interno is_admin / is_staff)
+GRANT EXECUTE ON FUNCTION public.create_product_atomic(TEXT, TEXT, TEXT, NUMERIC, NUMERIC, INT, INT, UUID, TEXT, BOOLEAN, BOOLEAN, TEXT) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.process_pos_sale_atomic(TEXT, TEXT, TEXT, TEXT, TEXT, NUMERIC, NUMERIC, NUMERIC, NUMERIC, TEXT, TEXT, TEXT, TEXT, JSONB, UUID, TEXT) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.process_payment_and_invoice(UUID, TEXT, NUMERIC, TEXT, TEXT) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.adjust_product_stock_atomic(UUID, INT, TEXT, TEXT, TEXT) TO authenticated;
@@ -2497,24 +3089,33 @@ GRANT EXECUTE ON FUNCTION public.cancel_order_with_stock_return(UUID, TEXT, TEXT
 GRANT EXECUTE ON FUNCTION public.cancel_order_atomic(UUID, TEXT, TEXT) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.cancel_invoice_atomic(UUID, TEXT, TEXT) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.update_order_status_atomic(UUID, TEXT, TEXT, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.register_purchase_atomic(UUID, TEXT, TEXT, JSONB, TEXT, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.delete_system_user(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.delete_order_atomic(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.delete_invoice_atomic(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.clear_orders_atomic() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.clear_invoices_atomic() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.open_cash_shift_atomic(NUMERIC, TEXT, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.close_cash_shift_atomic(UUID, NUMERIC, TEXT) TO authenticated;
 
--- Otorgar función de verificación de rol a authenticated y anon (para evaluación en RLS)
+-- Verificación de rol disponible para authenticated y anon
 GRANT EXECUTE ON FUNCTION public.is_admin() TO authenticated, anon;
+GRANT EXECUTE ON FUNCTION public.is_cashier() TO authenticated, anon;
+GRANT EXECUTE ON FUNCTION public.is_staff() TO authenticated, anon;
 
--- Otorgar procedimiento exclusivo de promoción administrativa solo a superusuario / backend
+-- Procedimiento exclusivo de backend
 GRANT EXECUTE ON PROCEDURE public.promote_user_to_admin(TEXT) TO postgres, service_role;
 
--- Funciones públicas autorizadas para storefront (crear pedidos web y tracking)
+-- Storefront público
 GRANT EXECUTE ON FUNCTION public.create_order_atomic(TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, JSONB) TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.track_order(TEXT) TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.get_invoice_by_order(UUID) TO anon, authenticated;
 
--- Funciones autorizadas para escáner móvil remoto de POS
+-- Escáner móvil de POS
 REVOKE ALL ON FUNCTION public.create_pos_scanner_session(TEXT, INTEGER) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.create_pos_scanner_session(INTEGER, TEXT) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.create_pos_scanner_session(TEXT, INTEGER) TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.create_pos_scanner_session(INTEGER, TEXT) TO anon, authenticated;
-
 GRANT EXECUTE ON FUNCTION public.connect_pos_scanner_session(TEXT, TEXT, TEXT, TEXT) TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.disconnect_pos_scanner_session(UUID, TEXT, TEXT) TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.validate_pos_scan_event(TEXT, TEXT, TEXT) TO anon, authenticated;

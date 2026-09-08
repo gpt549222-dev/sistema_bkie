@@ -142,90 +142,34 @@ function generateShortCode(): string {
   return String(Math.floor(100000 + Math.random() * 900000));
 }
 
-function isMissingFunctionError(error: any): boolean {
-  if (!error) return false;
-  const msg = String(error.message || error.details || error.hint || '').toLowerCase();
-  const code = String(error.code || '');
-  return (
-    code === 'PGRST202' ||
-    msg.includes('could not find the function') ||
-    msg.includes('schema cache') ||
-    msg.includes('not found') ||
-    msg.includes('permission denied') ||
-    msg.includes('violates row-level')
-  );
-}
-
 /**
  * Create a new scanner session in Supabase (Staff only)
- * Resilient to schema cache propagation or pending database migrations
+ * Uses atomic RPC exclusively for security and audit trail
  */
 export async function createScannerSession(
   posIdentifier: string = 'Caja Principal',
   expiresMinutes: number = 30
 ): Promise<PosScannerSession> {
-  // 1. Try standard Supabase RPC
-  try {
-    const { data, error } = await supabase.rpc('create_pos_scanner_session', {
-      p_pos_identifier: posIdentifier,
-      p_expires_minutes: expiresMinutes,
-    });
+  const { data, error } = await supabase.rpc('create_pos_scanner_session', {
+    p_pos_identifier: posIdentifier,
+    p_expires_minutes: expiresMinutes,
+  });
 
-    if (!error && data && data.session_token) {
-      return data as PosScannerSession;
-    }
-
-    if (error && !isMissingFunctionError(error)) {
-      console.warn('[scannerService] RPC create_pos_scanner_session notice:', error.message);
-    }
-  } catch (err: any) {
-    if (!isMissingFunctionError(err)) {
-      console.warn('[scannerService] RPC invocation notice:', err?.message || err);
-    }
+  if (error) {
+    console.error('[scannerService] Error al crear sesión de escáner:', error);
+    throw new Error(error.message || 'Error al crear la sesión de escáner en el servidor.');
   }
 
-  // 2. Direct database table insert fallback if RPC is not present
-  const token = generateSecureToken();
-  const shortCode = generateShortCode();
-  const nowIso = new Date().toISOString();
-  const expiresAt = new Date(Date.now() + expiresMinutes * 60 * 1000).toISOString();
-  const fallbackSession: PosScannerSession = {
-    id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `ses_${Date.now()}`,
-    session_token: token,
-    short_code: shortCode,
-    pos_identifier: posIdentifier,
-    status: 'waiting',
-    created_at: nowIso,
-    expires_at: expiresAt,
-  };
-
-  try {
-    const { data: dbData, error: dbError } = await supabase
-      .from('pos_scanner_sessions')
-      .insert({
-        id: fallbackSession.id,
-        session_token: fallbackSession.session_token,
-        short_code: fallbackSession.short_code,
-        pos_identifier: fallbackSession.pos_identifier,
-        status: 'waiting',
-        expires_at: fallbackSession.expires_at,
-      })
-      .select()
-      .single();
-
-    if (!dbError && dbData) {
-      return dbData as PosScannerSession;
-    }
-  } catch {
-    // If table doesn't exist yet, proceed with Realtime-only in-memory session
+  if (!data || !data.session_token) {
+    throw new Error('La base de datos no devolvió los datos requeridos para la sesión de escáner.');
   }
 
-  // 3. Pure Realtime session fallback (Supabase Realtime Broadcast works seamlessly)
-  return fallbackSession;
+  return data as PosScannerSession;
 }
 
 /**
  * Connect a mobile device to an existing scanner session
+ * Uses atomic RPC exclusively
  */
 export async function connectScannerSession(params: {
   token?: string;
@@ -236,132 +180,52 @@ export async function connectScannerSession(params: {
   const deviceId = params.deviceId || getOrCreateDeviceId();
   const deviceName = params.deviceName || getDeviceName();
 
-  // 1. Try RPC
-  try {
-    const { data, error } = await supabase.rpc('connect_pos_scanner_session', {
-      p_token: params.token || null,
-      p_short_code: params.shortCode || null,
-      p_device_id: deviceId,
-      p_device_name: deviceName,
-    });
-
-    if (!error && data && data.status !== 'error') {
-      return data as PosScannerSession;
-    }
-  } catch (err: any) {
-    console.warn('[scannerService] RPC connect notice:', err?.message || err);
+  if (!params.token && !params.shortCode) {
+    throw new Error('Debes proporcionar un enlace o código de escáner válido.');
   }
 
-  // 2. Direct table update / query fallback
-  if (params.token) {
-    const cleanToken = params.token.trim();
-    try {
-      await supabase
-        .from('pos_scanner_sessions')
-        .update({
-          status: 'connected',
-          device_id: deviceId,
-          device_name: deviceName,
-          connected_at: new Date().toISOString(),
-        })
-        .eq('session_token', cleanToken);
-    } catch {}
+  const { data, error } = await supabase.rpc('connect_pos_scanner_session', {
+    p_token: params.token ? params.token.trim() : null,
+    p_short_code: params.shortCode ? params.shortCode.trim() : null,
+    p_device_id: deviceId,
+    p_device_name: deviceName,
+  });
 
-    return {
-      id: `conn_${Date.now()}`,
-      session_token: cleanToken,
-      short_code: params.shortCode || '100000',
-      pos_identifier: 'Caja Principal',
-      status: 'connected',
-      device_id: deviceId,
-      device_name: deviceName,
-      created_at: new Date().toISOString(),
-      expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-    };
+  if (error) {
+    console.error('[scannerService] Error al conectar sesión de escáner:', error);
+    throw new Error(error.message || 'No fue posible conectar con la sesión de escáner.');
   }
 
-  if (params.shortCode) {
-    const code = params.shortCode.trim();
-    try {
-      const { data: found } = await supabase
-        .from('pos_scanner_sessions')
-        .select('*')
-        .eq('short_code', code)
-        .gt('expires_at', new Date().toISOString())
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      if (found) {
-        try {
-          await supabase
-            .from('pos_scanner_sessions')
-            .update({
-              status: 'connected',
-              device_id: deviceId,
-              device_name: deviceName,
-              connected_at: new Date().toISOString(),
-            })
-            .eq('id', found.id);
-        } catch {}
-
-        return { ...found, status: 'connected', device_id: deviceId, device_name: deviceName };
-      }
-    } catch {}
-
-    // Same-origin localStorage check
-    try {
-      const saved = localStorage.getItem('bikie_pos_scanner_session');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed?.short_code === code) {
-          return {
-            ...parsed,
-            status: 'connected',
-            device_id: deviceId,
-            device_name: deviceName,
-          };
-        }
-      }
-    } catch {}
-
-    throw new Error('Código de escáner no encontrado o sesión expirada.');
+  if (!data || data.status === 'error') {
+    throw new Error(data?.message || 'Error al conectar el dispositivo a la sesión.');
   }
 
-  throw new Error('Debes proporcionar un enlace o código de escáner válido.');
+  return data as PosScannerSession;
 }
 
 /**
  * Disconnect a scanner session
+ * Uses atomic RPC exclusively
  */
 export async function disconnectScannerSession(params: {
   sessionId?: string;
   token?: string;
   deviceId?: string;
 }): Promise<void> {
-  try {
-    await supabase.rpc('disconnect_pos_scanner_session', {
-      p_session_id: params.sessionId || null,
-      p_token: params.token || null,
-      p_device_id: params.deviceId || null,
-    });
-  } catch {}
+  const { error } = await supabase.rpc('disconnect_pos_scanner_session', {
+    p_session_id: params.sessionId || null,
+    p_token: params.token ? params.token.trim() : null,
+    p_device_id: params.deviceId || null,
+  });
 
-  if (params.token) {
-    try {
-      await supabase
-        .from('pos_scanner_sessions')
-        .update({
-          status: 'disconnected',
-          disconnected_at: new Date().toISOString(),
-        })
-        .eq('session_token', params.token);
-    } catch {}
+  if (error) {
+    console.warn('[scannerService] Aviso al desconectar sesión de escáner:', error.message);
   }
 }
 
 /**
- * Validate scan event on Supabase and check if product exists
+ * Validate scan event on Supabase and verify product existence
+ * Uses atomic RPC exclusively (search by barcode first, then code or id)
  */
 export async function validateScanEvent(
   token: string,
@@ -377,70 +241,52 @@ export async function validateScanEvent(
   stock?: number;
   error?: string;
 }> {
-  // 1. Try RPC
-  try {
-    const { data, error } = await supabase.rpc('validate_pos_scan_event', {
-      p_token: token,
-      p_barcode: barcode,
-      p_device_id: deviceId || getOrCreateDeviceId(),
-    });
-
-    if (!error && data) {
-      return data;
-    }
-  } catch {}
-
-  // 2. Direct product lookup fallback
-  const product = await getProductByCode(barcode);
-  if (product) {
+  const cleanBarcode = (barcode || '').trim();
+  if (!cleanBarcode) {
     return {
-      valid: true,
-      found: true,
-      barcode: product.code || barcode,
-      product_id: product.id,
-      product_name: product.name,
-      price: product.price,
-      stock: product.stock,
+      valid: false,
+      error: 'El código de barras está vacío.',
     };
   }
 
-  return {
-    valid: true,
-    found: false,
-    barcode: barcode,
-    error: 'Producto no encontrado en inventario',
-  };
+  const { data, error } = await supabase.rpc('validate_pos_scan_event', {
+    p_token: token.trim(),
+    p_barcode: cleanBarcode,
+    p_device_id: deviceId || getOrCreateDeviceId(),
+  });
+
+  if (error) {
+    console.error('[scannerService] Error en RPC validate_pos_scan_event:', error);
+    return {
+      valid: false,
+      error: error.message || 'Error al validar el escaneo en el servidor.',
+    };
+  }
+
+  return data;
 }
 
 /**
  * Get current scanner session status
+ * Uses atomic RPC exclusively
  */
 export async function getScannerSessionStatus(params: {
   sessionId?: string;
   token?: string;
 }): Promise<PosScannerSession | null> {
-  try {
-    const { data, error } = await supabase.rpc('get_pos_scanner_session_status', {
-      p_session_id: params.sessionId || null,
-      p_token: params.token || null,
-    });
+  const { data, error } = await supabase.rpc('get_pos_scanner_session_status', {
+    p_session_id: params.sessionId || null,
+    p_token: params.token ? params.token.trim() : null,
+  });
 
-    if (!error && data && data.status !== 'not_found') {
-      return data as PosScannerSession;
-    }
-  } catch {}
-
-  if (params.token) {
-    try {
-      const { data } = await supabase
-        .from('pos_scanner_sessions')
-        .select('*')
-        .eq('session_token', params.token)
-        .maybeSingle();
-
-      if (data) return data as PosScannerSession;
-    } catch {}
+  if (error) {
+    console.warn('[scannerService] Error al obtener estado de sesión:', error.message);
+    return null;
   }
 
-  return null;
+  if (!data || data.status === 'not_found' || data.error) {
+    return null;
+  }
+
+  return data as PosScannerSession;
 }

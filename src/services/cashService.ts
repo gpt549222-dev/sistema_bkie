@@ -68,45 +68,24 @@ export async function openCashShift(
     throw new Error('El monto de apertura de caja no puede ser negativo.');
   }
 
-  // 1. Intentar RPC atómico
-  try {
-    const { data: rpcData, error: rpcError } = await supabase.rpc('open_cash_shift_atomic', {
-      p_initial_amount: initialAmount,
-      p_opened_by: cashierName,
-      p_notes: notes || null,
-    });
+  const { data: rpcData, error: rpcError } = await supabase.rpc('open_cash_shift_atomic', {
+    p_initial_amount: initialAmount,
+    p_opened_by: cashierName,
+    p_notes: notes || null,
+  });
 
-    if (!rpcError && rpcData?.id) {
-      return {
-        ...rpcData,
-        initial_amount: Number(rpcData.initial_amount) || initialAmount,
-        final_amount: null,
-        total_sales: 0,
-      };
-    }
-  } catch {}
+  if (rpcError) {
+    console.error('[cashService] Error en RPC open_cash_shift_atomic:', rpcError);
+    throw new Error(rpcError.message || 'Error al abrir turno de caja en el servidor.');
+  }
 
-  // 2. Inserción directa
-  const { data, error } = await supabase
-    .from('cash_shifts')
-    .insert({
-      opened_by: cashierName,
-      initial_amount: initialAmount,
-      total_sales: 0,
-      status: 'open',
-      notes: notes || 'Apertura de turno en caja',
-      opened_at: new Date().toISOString(),
-    })
-    .select()
-    .single();
-
-  if (error || !data) {
-    throw new Error(`Error al abrir turno de caja: ${error?.message || 'Fallo de inserción'}`);
+  if (!rpcData?.id) {
+    throw new Error('No se pudo confirmar la apertura del turno de caja en la base de datos.');
   }
 
   return {
-    ...data,
-    initial_amount: Number(data.initial_amount) || 0,
+    ...rpcData,
+    initial_amount: Number(rpcData.initial_amount) || initialAmount,
     final_amount: null,
     total_sales: 0,
   };
@@ -126,99 +105,26 @@ export async function closeCashShift(
     throw new Error('El conteo físico de efectivo no puede ser negativo.');
   }
 
-  // 1. Intentar RPC atómico
-  try {
-    const { data: rpcData, error: rpcError } = await supabase.rpc('close_cash_shift_atomic', {
-      p_shift_id: shiftId,
-      p_final_amount: finalCountedAmount,
-      p_notes: notes || null,
-    });
-
-    if (!rpcError && rpcData?.success) {
-      return {
-        shift: rpcData.shift,
-        expectedAmount: Number(rpcData.expected_amount) || finalCountedAmount,
-        finalCountedAmount,
-        difference: Number(rpcData.difference) || 0,
-      };
-    }
-  } catch {}
-
-  // 2. Cálculo directo de arqueo
-  const { data: shift, error: sErr } = await supabase
-    .from('cash_shifts')
-    .select('*')
-    .eq('id', shiftId)
-    .single();
-
-  if (sErr || !shift) {
-    throw new Error('No se encontró el turno de caja especificado.');
-  }
-
-  const initialAmount = Number(shift.initial_amount) || 0;
-  const openedAt = shift.opened_at;
-  const nowIso = new Date().toISOString();
-
-  // Consultar ventas en efectivo durante este turno
-  const { data: cashSales } = await supabase
-    .from('sales')
-    .select('total_amount')
-    .eq('payment_method', 'efectivo')
-    .gte('created_at', openedAt)
-    .lte('created_at', nowIso);
-
-  const cashSalesTotal = (cashSales || []).reduce(
-    (sum, s) => sum + (Number(s.total_amount) || 0),
-    0
-  );
-
-  // Consultar movimientos de efectivo
-  const { data: movements } = await supabase
-    .from('cash_movements')
-    .select('type, amount')
-    .eq('cash_register_id', shiftId);
-
-  let depositsTotal = 0;
-  let withdrawalsTotal = 0;
-
-  (movements || []).forEach((m) => {
-    const amt = Number(m.amount) || 0;
-    if (m.type === 'deposit') depositsTotal += amt;
-    else if (m.type === 'withdrawal') withdrawalsTotal += amt;
+  const { data: rpcData, error: rpcError } = await supabase.rpc('close_cash_shift_atomic', {
+    p_shift_id: shiftId,
+    p_final_amount: finalCountedAmount,
+    p_notes: notes || null,
   });
 
-  const expectedAmount = initialAmount + cashSalesTotal + depositsTotal - withdrawalsTotal;
-  const difference = finalCountedAmount - expectedAmount;
+  if (rpcError) {
+    console.error('[cashService] Error en RPC close_cash_shift_atomic:', rpcError);
+    throw new Error(rpcError.message || 'Error al realizar el arqueo y cierre de caja.');
+  }
 
-  const closeNote = `Cierre realizado. Esperado: ${expectedAmount} XAF, Contado: ${finalCountedAmount} XAF, Dif: ${difference} XAF. ${notes || ''}`;
-
-  const { data: updatedShift, error: uErr } = await supabase
-    .from('cash_shifts')
-    .update({
-      status: 'closed',
-      final_amount: finalCountedAmount,
-      total_sales: cashSalesTotal,
-      closed_at: nowIso,
-      notes: closeNote.trim(),
-    })
-    .eq('id', shiftId)
-    .select()
-    .single();
-
-  if (uErr || !updatedShift) {
-    throw new Error(`Error al cerrar turno de caja: ${uErr?.message}`);
+  if (!rpcData?.success || !rpcData?.shift) {
+    throw new Error('No se pudo completar el arqueo de caja en el servidor.');
   }
 
   return {
-    shift: {
-      ...updatedShift,
-      initial_amount: Number(updatedShift.initial_amount) || 0,
-      final_amount: Number(updatedShift.final_amount) || 0,
-      total_sales: Number(updatedShift.total_sales) || 0,
-    },
-    expectedAmount,
+    shift: rpcData.shift,
+    expectedAmount: Number(rpcData.expected_amount) || finalCountedAmount,
     finalCountedAmount,
-    difference,
+    difference: Number(rpcData.difference) || 0,
   };
 }
 
